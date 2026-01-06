@@ -2,9 +2,11 @@
 
 import { useState } from "react"
 import type { InventoryItem } from "@/lib/inventory"
+import { getWarehouses } from "@/lib/warehouse"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Badge } from "@/components/ui/badge"
 import {
   Dialog,
   DialogContent,
@@ -23,9 +25,10 @@ interface InventoryTableProps {
   onUpdate: (id: string, updates: Partial<InventoryItem>) => void
   onDelete: (id: string) => void
   onMovement: (id: string, cantidad: number, tipo: "entrada" | "salida") => void
+  showWarehouse?: boolean // Prop para mostrar columna de bodega
 }
 
-export function InventoryTable({ items, onUpdate, onDelete, onMovement }: InventoryTableProps) {
+export function InventoryTable({ items, onUpdate, onDelete, onMovement, showWarehouse = false }: InventoryTableProps) {
   const [searchTerm, setSearchTerm] = useState("")
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null)
   const [editForm, setEditForm] = useState({ codigo: "", nombre: "", cantidadDisponible: 0, precio: 0 })
@@ -73,6 +76,7 @@ export function InventoryTable({ items, onUpdate, onDelete, onMovement }: Invent
             <TableRow>
               <TableHead>Código</TableHead>
               <TableHead>Nombre</TableHead>
+              {showWarehouse && <TableHead>Bodega</TableHead>}
               <TableHead className="text-right">Inicial</TableHead>
               <TableHead className="text-right">Usado Hoy</TableHead>
               <TableHead className="text-right">Disponible</TableHead>
@@ -84,51 +88,60 @@ export function InventoryTable({ items, onUpdate, onDelete, onMovement }: Invent
           <TableBody>
             {filteredItems.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
+                <TableCell colSpan={showWarehouse ? 9 : 8} className="text-center text-muted-foreground py-8">
                   {searchTerm ? "No se encontraron resultados" : "No hay productos en el inventario"}
                 </TableCell>
               </TableRow>
             ) : (
-              filteredItems.map((item) => (
-                <TableRow key={item.id}>
-                  <TableCell className="font-medium">{item.codigo}</TableCell>
-                  <TableCell>{item.nombre}</TableCell>
-                  <TableCell className="text-right text-muted-foreground">{item.cantidadInicial}</TableCell>
-                  <TableCell className="text-right text-destructive font-medium">{item.cantidadUsada}</TableCell>
-                  <TableCell className="text-right font-semibold">{item.cantidadDisponible}</TableCell>
-                  <TableCell className="text-right">${item.precio.toFixed(2)}</TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {new Date(item.fechaActualizacion).toLocaleString("es-ES", {
-                      day: "2-digit",
-                      month: "2-digit",
-                      year: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-2">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setMovementItem(item)}
-                        title="Registrar entrada/salida"
-                      >
-                        <PackagePlus className="h-4 w-4" />
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={() => setHistoryItem(item)} title="Ver historial">
-                        <History className="h-4 w-4" />
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={() => handleEdit(item)}>
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={() => onDelete(item.id)}>
-                        <Trash2 className="h-4 w-4 text-destructive" />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))
+              filteredItems.map((item) => {
+                const warehouse = showWarehouse ? getWarehouses().find((w) => w.id === item.warehouseId) : null
+
+                return (
+                  <TableRow key={item.id}>
+                    <TableCell className="font-medium">{item.codigo}</TableCell>
+                    <TableCell>{item.nombre}</TableCell>
+                    {showWarehouse && (
+                      <TableCell>
+                        <Badge variant="outline">{warehouse?.nombre || "Sin bodega"}</Badge>
+                      </TableCell>
+                    )}
+                    <TableCell className="text-right text-muted-foreground">{item.cantidadInicial}</TableCell>
+                    <TableCell className="text-right text-destructive font-medium">{item.cantidadUsada}</TableCell>
+                    <TableCell className="text-right font-semibold">{item.cantidadDisponible}</TableCell>
+                    <TableCell className="text-right">${item.precio.toFixed(2)}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">
+                      {new Date(item.fechaActualizacion).toLocaleString("es-ES", {
+                        day: "2-digit",
+                        month: "2-digit",
+                        year: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setMovementItem(item)}
+                          title="Registrar entrada/salida"
+                        >
+                          <PackagePlus className="h-4 w-4" />
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setHistoryItem(item)} title="Ver historial">
+                          <History className="h-4 w-4" />
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => handleEdit(item)}>
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => onDelete(item.id)}>
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )
+              })
             )}
           </TableBody>
         </Table>

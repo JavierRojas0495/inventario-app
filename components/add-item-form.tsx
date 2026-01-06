@@ -7,17 +7,24 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Plus } from "lucide-react"
+import { getWarehouses } from "@/lib/warehouse"
 
 interface AddItemFormProps {
-  onAdd: (item: { codigo: string; nombre: string; cantidad: number; precio: number }) => void
+  onAdd: (item: { codigo: string; nombre: string; cantidad: number; precio: number }, warehouseId?: string) => void
+  currentWarehouseId?: string | null // Bodega actual seleccionada
 }
 
-export function AddItemForm({ onAdd }: AddItemFormProps) {
+export function AddItemForm({ onAdd, currentWarehouseId }: AddItemFormProps) {
   const [codigo, setCodigo] = useState("")
   const [nombre, setNombre] = useState("")
   const [cantidad, setCantidad] = useState("")
   const [precio, setPrecio] = useState("")
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>("") // Selector de bodega
+
+  const needsWarehouseSelector = currentWarehouseId === "all"
+  const warehouses = needsWarehouseSelector ? getWarehouses() : []
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -26,17 +33,27 @@ export function AddItemForm({ onAdd }: AddItemFormProps) {
       return
     }
 
-    onAdd({
-      codigo: codigo.trim(),
-      nombre: nombre.trim(),
-      cantidad: Number.parseFloat(cantidad) || 0,
-      precio: Number.parseFloat(precio) || 0,
-    })
+    if (needsWarehouseSelector && !selectedWarehouseId) {
+      return
+    }
+
+    const warehouseId = needsWarehouseSelector ? selectedWarehouseId : currentWarehouseId
+
+    onAdd(
+      {
+        codigo: codigo.trim(),
+        nombre: nombre.trim(),
+        cantidad: Number.parseFloat(cantidad) || 0,
+        precio: Number.parseFloat(precio) || 0,
+      },
+      warehouseId || undefined,
+    )
 
     setCodigo("")
     setNombre("")
     setCantidad("")
     setPrecio("")
+    setSelectedWarehouseId("")
   }
 
   return (
@@ -47,6 +64,23 @@ export function AddItemForm({ onAdd }: AddItemFormProps) {
       </CardHeader>
       <CardContent>
         <form onSubmit={handleSubmit} className="space-y-4">
+          {needsWarehouseSelector && (
+            <div className="space-y-2">
+              <Label htmlFor="warehouse">Bodega *</Label>
+              <Select value={selectedWarehouseId} onValueChange={setSelectedWarehouseId} required>
+                <SelectTrigger id="warehouse">
+                  <SelectValue placeholder="Selecciona una bodega" />
+                </SelectTrigger>
+                <SelectContent>
+                  {warehouses.map((warehouse) => (
+                    <SelectItem key={warehouse.id} value={warehouse.id}>
+                      {warehouse.nombre}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="codigo">Código/SKU</Label>

@@ -10,6 +10,7 @@ export interface InventoryItem {
   fechaCreacion: string
   fechaActualizacion: string
   fechaInicioDay: string // Fecha del último inicio de día
+  warehouseId: string // Agregado campo warehouseId para identificar la bodega
 }
 
 export interface InventoryMovement {
@@ -28,10 +29,35 @@ export interface InventoryMovement {
 const STORAGE_KEY = "inventory_items"
 const MOVEMENTS_KEY = "inventory_movements"
 
-export function getInventoryItems(): InventoryItem[] {
+function getStorageKey(key: string, warehouseId: string | null): string {
+  if (!warehouseId || warehouseId === "all") return key
+  return `${key}_${warehouseId}`
+}
+
+export function getAllWarehousesItems(): InventoryItem[] {
   if (typeof window === "undefined") return []
 
-  const itemsStr = localStorage.getItem(STORAGE_KEY)
+  const { getWarehouses } = require("@/lib/warehouse")
+  const warehouses = getWarehouses()
+  const allItems: InventoryItem[] = []
+
+  warehouses.forEach((warehouse: any) => {
+    const items = getInventoryItems(warehouse.id)
+    allItems.push(...items)
+  })
+
+  return allItems
+}
+
+export function getInventoryItems(warehouseId: string | null = null): InventoryItem[] {
+  if (typeof window === "undefined") return []
+
+  if (warehouseId === "all") {
+    return getAllWarehousesItems()
+  }
+
+  const storageKey = getStorageKey("inventory_items", warehouseId)
+  const itemsStr = localStorage.getItem(storageKey)
   if (!itemsStr) return []
 
   try {
@@ -41,14 +67,16 @@ export function getInventoryItems(): InventoryItem[] {
   }
 }
 
-export function saveInventoryItems(items: InventoryItem[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(items))
+export function saveInventoryItems(items: InventoryItem[], warehouseId: string | null = null): void {
+  const storageKey = getStorageKey("inventory_items", warehouseId)
+  localStorage.setItem(storageKey, JSON.stringify(items))
 }
 
-export function getInventoryMovements(): InventoryMovement[] {
+export function getInventoryMovements(warehouseId: string | null = null): InventoryMovement[] {
   if (typeof window === "undefined") return []
 
-  const movementsStr = localStorage.getItem(MOVEMENTS_KEY)
+  const storageKey = getStorageKey("inventory_movements", warehouseId)
+  const movementsStr = localStorage.getItem(storageKey)
   if (!movementsStr) return []
 
   try {
@@ -58,23 +86,27 @@ export function getInventoryMovements(): InventoryMovement[] {
   }
 }
 
-export function saveInventoryMovements(movements: InventoryMovement[]): void {
-  localStorage.setItem(MOVEMENTS_KEY, JSON.stringify(movements))
+export function saveInventoryMovements(movements: InventoryMovement[], warehouseId: string | null = null): void {
+  const storageKey = getStorageKey("inventory_movements", warehouseId)
+  localStorage.setItem(storageKey, JSON.stringify(movements))
 }
 
-export function addMovement(movement: Omit<InventoryMovement, "id" | "fecha">): void {
-  const movements = getInventoryMovements()
+export function addMovement(
+  movement: Omit<InventoryMovement, "id" | "fecha">,
+  warehouseId: string | null = null,
+): void {
+  const movements = getInventoryMovements(warehouseId)
   const newMovement: InventoryMovement = {
     ...movement,
     id: crypto.randomUUID(),
     fecha: new Date().toISOString(),
   }
   movements.push(newMovement)
-  saveInventoryMovements(movements)
+  saveInventoryMovements(movements, warehouseId)
 }
 
-export function getMovementsByItem(itemId: string): InventoryMovement[] {
-  return getInventoryMovements().filter((m) => m.itemId === itemId)
+export function getMovementsByItem(itemId: string, warehouseId: string | null = null): InventoryMovement[] {
+  return getInventoryMovements(warehouseId).filter((m) => m.itemId === itemId)
 }
 
 export function addInventoryItem(
@@ -87,14 +119,21 @@ export function addInventoryItem(
     | "cantidadUsada"
     | "cantidadDisponible"
     | "fechaInicioDay"
+    | "warehouseId"
   >,
+  warehouseId: string | null = null,
 ): InventoryItem {
-  const items = getInventoryItems()
+  if (warehouseId === "all") {
+    throw new Error("No se puede agregar producto a 'Todas las bodegas'. Selecciona una bodega específica.")
+  }
+
+  const items = getInventoryItems(warehouseId)
   const now = new Date().toISOString()
 
   const newItem: InventoryItem = {
     ...item,
     id: crypto.randomUUID(),
+    warehouseId: warehouseId || "", // Asignar bodega al item
     cantidadInicial: item.cantidad,
     cantidadUsada: 0,
     cantidadDisponible: item.cantidad,
@@ -104,18 +143,21 @@ export function addInventoryItem(
   }
 
   items.push(newItem)
-  saveInventoryItems(items)
+  saveInventoryItems(items, warehouseId)
 
-  addMovement({
-    itemId: newItem.id,
-    itemCodigo: newItem.codigo,
-    itemNombre: newItem.nombre,
-    tipo: "creacion",
-    cantidadAnterior: 0,
-    cantidadNueva: newItem.cantidadDisponible,
-    diferencia: newItem.cantidadDisponible,
-    descripcion: `Producto creado con stock inicial de ${newItem.cantidadDisponible} unidades`,
-  })
+  addMovement(
+    {
+      itemId: newItem.id,
+      itemCodigo: newItem.codigo,
+      itemNombre: newItem.nombre,
+      tipo: "creacion",
+      cantidadAnterior: 0,
+      cantidadNueva: newItem.cantidadDisponible,
+      diferencia: newItem.cantidadDisponible,
+      descripcion: `Producto creado con stock inicial de ${newItem.cantidadDisponible} unidades`,
+    },
+    warehouseId,
+  )
 
   return newItem
 }
@@ -123,8 +165,9 @@ export function addInventoryItem(
 export function updateInventoryItem(
   id: string,
   updates: Partial<Omit<InventoryItem, "id" | "fechaCreacion">>,
+  warehouseId: string | null = null,
 ): boolean {
-  const items = getInventoryItems()
+  const items = getInventoryItems(warehouseId)
   const index = items.findIndex((item) => item.id === id)
 
   if (index === -1) return false
@@ -147,49 +190,67 @@ export function updateInventoryItem(
   newItem.fechaActualizacion = new Date().toISOString()
 
   items[index] = newItem
-  saveInventoryItems(items)
+  saveInventoryItems(items, warehouseId)
 
   // Registrar movimiento si cambió la cantidad disponible
   if (updates.cantidadDisponible !== undefined && updates.cantidadDisponible !== oldItem.cantidadDisponible) {
     const diferencia = updates.cantidadDisponible - oldItem.cantidadDisponible
-    addMovement({
-      itemId: id,
-      itemCodigo: newItem.codigo,
-      itemNombre: newItem.nombre,
-      tipo: diferencia > 0 ? "entrada" : "salida",
-      cantidadAnterior: oldItem.cantidadDisponible,
-      cantidadNueva: updates.cantidadDisponible,
-      diferencia: Math.abs(diferencia),
-      descripcion: diferencia > 0 ? `Entrada de ${diferencia} unidades` : `Salida de ${Math.abs(diferencia)} unidades`,
-    })
+    addMovement(
+      {
+        itemId: id,
+        itemCodigo: newItem.codigo,
+        itemNombre: newItem.nombre,
+        tipo: diferencia > 0 ? "entrada" : "salida",
+        cantidadAnterior: oldItem.cantidadDisponible,
+        cantidadNueva: updates.cantidadDisponible,
+        diferencia: Math.abs(diferencia),
+        descripcion:
+          diferencia > 0 ? `Entrada de ${diferencia} unidades` : `Salida de ${Math.abs(diferencia)} unidades`,
+      },
+      warehouseId,
+    )
   } else if (updates.codigo || updates.nombre || updates.precio) {
-    addMovement({
-      itemId: id,
-      itemCodigo: newItem.codigo,
-      itemNombre: newItem.nombre,
-      tipo: "edicion",
-      cantidadAnterior: oldItem.cantidadDisponible,
-      cantidadNueva: newItem.cantidadDisponible,
-      diferencia: 0,
-      descripcion: "Información del producto actualizada",
-    })
+    addMovement(
+      {
+        itemId: id,
+        itemCodigo: newItem.codigo,
+        itemNombre: newItem.nombre,
+        tipo: "edicion",
+        cantidadAnterior: oldItem.cantidadDisponible,
+        cantidadNueva: newItem.cantidadDisponible,
+        diferencia: 0,
+        descripcion: "Información del producto actualizada",
+      },
+      warehouseId,
+    )
   }
 
   return true
 }
 
-export function deleteInventoryItem(id: string): boolean {
-  const items = getInventoryItems()
+export function deleteInventoryItem(id: string, warehouseId: string | null = null): boolean {
+  const items = getInventoryItems(warehouseId)
   const filteredItems = items.filter((item) => item.id !== id)
 
   if (filteredItems.length === items.length) return false
 
-  saveInventoryItems(filteredItems)
+  saveInventoryItems(filteredItems, warehouseId)
   return true
 }
 
 // Función para importar desde CSV/Excel
-export function importFromCSV(csvText: string): { success: boolean; count: number; errors: string[] } {
+export function importFromCSV(
+  csvText: string,
+  warehouseId: string | null = null,
+): { success: boolean; count: number; errors: string[] } {
+  if (warehouseId === "all") {
+    return {
+      success: false,
+      count: 0,
+      errors: ["No se puede importar a 'Todas las bodegas'. Selecciona una bodega específica."],
+    }
+  }
+
   const errors: string[] = []
   let count = 0
 
@@ -226,7 +287,7 @@ export function importFromCSV(csvText: string): { success: boolean; count: numbe
         continue
       }
 
-      addInventoryItem({ codigo, nombre, cantidad, precio })
+      addInventoryItem({ codigo, nombre, cantidad, precio }, warehouseId)
       count++
     }
 
@@ -238,24 +299,31 @@ export function importFromCSV(csvText: string): { success: boolean; count: numbe
 
 // Función para exportar a CSV
 export function exportToCSV(items: InventoryItem[]): string {
-  const headers = ["Código", "Nombre", "Inicial", "Usado Hoy", "Disponible", "Precio", "Última Actualización"]
-  const rows = items.map((item) => [
-    item.codigo,
-    item.nombre,
-    item.cantidadInicial.toString(),
-    item.cantidadUsada.toString(),
-    item.cantidadDisponible.toString(),
-    item.precio.toString(),
-    new Date(item.fechaActualizacion).toLocaleString("es-ES"),
-  ])
+  const headers = ["Código", "Nombre", "Bodega", "Inicial", "Usado Hoy", "Disponible", "Precio", "Última Actualización"]
+  const rows = items.map((item) => {
+    const { getWarehouses } = require("@/lib/warehouse")
+    const warehouses = getWarehouses()
+    const warehouse = warehouses.find((w: any) => w.id === item.warehouseId)
+
+    return [
+      item.codigo,
+      item.nombre,
+      warehouse?.nombre || "Sin bodega",
+      item.cantidadInicial.toString(),
+      item.cantidadUsada.toString(),
+      item.cantidadDisponible.toString(),
+      item.precio.toString(),
+      new Date(item.fechaActualizacion).toLocaleString("es-ES"),
+    ]
+  })
 
   const csvContent = [headers.join(","), ...rows.map((row) => row.map((cell) => `"${cell}"`).join(","))].join("\n")
 
   return csvContent
 }
 
-export function resetDailyInventory(): void {
-  const items = getInventoryItems()
+export function resetDailyInventory(warehouseId: string | null = null): void {
+  const items = getInventoryItems(warehouseId)
   const now = new Date().toISOString()
 
   const updatedItems = items.map((item) => ({
@@ -265,24 +333,29 @@ export function resetDailyInventory(): void {
     fechaInicioDay: now,
   }))
 
-  saveInventoryItems(updatedItems)
+  saveInventoryItems(updatedItems, warehouseId)
 }
 
-export function checkAndResetDay(): void {
-  const items = getInventoryItems()
+export function checkAndResetDay(warehouseId: string | null = null): void {
+  const items = getInventoryItems(warehouseId)
   if (items.length === 0) return
 
   const today = new Date().toDateString()
   const lastReset = items[0]?.fechaInicioDay ? new Date(items[0].fechaInicioDay).toDateString() : null
 
   if (lastReset !== today) {
-    resetDailyInventory()
+    resetDailyInventory(warehouseId)
   }
 }
 
 // Función para registrar movimientos de entrada/salida
-export function registerMovement(id: string, cantidad: number, tipo: "entrada" | "salida"): boolean {
-  const items = getInventoryItems()
+export function registerMovement(
+  id: string,
+  cantidad: number,
+  tipo: "entrada" | "salida",
+  warehouseId: string | null = null,
+): boolean {
+  const items = getInventoryItems(warehouseId)
   const index = items.findIndex((item) => item.id === id)
 
   if (index === -1) return false
@@ -309,19 +382,22 @@ export function registerMovement(id: string, cantidad: number, tipo: "entrada" |
   }
 
   items[index] = newItem
-  saveInventoryItems(items)
+  saveInventoryItems(items, warehouseId)
 
   // Registrar el movimiento
-  addMovement({
-    itemId: id,
-    itemCodigo: newItem.codigo,
-    itemNombre: newItem.nombre,
-    tipo: tipo,
-    cantidadAnterior: oldItem.cantidadDisponible,
-    cantidadNueva: nuevaCantidadDisponible,
-    diferencia: cantidad,
-    descripcion: tipo === "entrada" ? `Entrada de ${cantidad} unidades` : `Salida/Uso de ${cantidad} unidades`,
-  })
+  addMovement(
+    {
+      itemId: id,
+      itemCodigo: newItem.codigo,
+      itemNombre: newItem.nombre,
+      tipo: tipo,
+      cantidadAnterior: oldItem.cantidadDisponible,
+      cantidadNueva: nuevaCantidadDisponible,
+      diferencia: cantidad,
+      descripcion: tipo === "entrada" ? `Entrada de ${cantidad} unidades` : `Salida/Uso de ${cantidad} unidades`,
+    },
+    warehouseId,
+  )
 
   return true
 }
