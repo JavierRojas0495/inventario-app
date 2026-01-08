@@ -3,7 +3,7 @@
   publish = ".next"
 
 [build.environment]
-  NODE_VERSION = "18"
+  NODE_VERSION = "20.9.0"
 
 # Configuración para Next.js
 # Netlify detectará automáticamente Next.js y usará el plugin correcto
