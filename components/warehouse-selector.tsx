@@ -3,16 +3,7 @@
 import type React from "react"
 
 import { useState, useEffect } from "react"
-import {
-  getWarehouses,
-  addWarehouse,
-  updateWarehouse,
-  deleteWarehouse,
-  getSelectedWarehouse,
-  setSelectedWarehouse,
-  getSelectedWarehouseId,
-  type Warehouse,
-} from "@/lib/warehouse"
+import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -36,42 +27,84 @@ import {
 import { WarehouseIcon, Plus, Settings, Pencil, Trash2, ChevronDown } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 
+interface Warehouse {
+  id: string
+  name: string
+  location: string | null
+  manager: string | null
+  phone: string | null
+}
+
 interface WarehouseSelectorProps {
   onWarehouseChange: (warehouseId: string | null) => void
 }
 
 export function WarehouseSelector({ onWarehouseChange }: WarehouseSelectorProps) {
-  const [warehouses, setWarehouses] = useState<Warehouse[]>(getWarehouses())
-  const [selectedWarehouse, setSelectedWarehouseState] = useState<Warehouse | null>(getSelectedWarehouse())
-  const [selectedWarehouseId, setSelectedWarehouseIdState] = useState<string | null>(getSelectedWarehouseId())
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([])
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState<string | null>(null)
+  const [selectedWarehouse, setSelectedWarehouse] = useState<Warehouse | null>(null)
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
   const [isManageDialogOpen, setIsManageDialogOpen] = useState(false)
   const [editingWarehouse, setEditingWarehouse] = useState<Warehouse | null>(null)
 
   const [formData, setFormData] = useState({
-    nombre: "",
-    ubicacion: "",
-    responsable: "",
-    telefono: "",
+    name: "",
+    location: "",
+    manager: "",
+    phone: "",
   })
 
   const { toast } = useToast()
+  const supabase = createClient()
 
   useEffect(() => {
-    setWarehouses(getWarehouses())
-    setSelectedWarehouseState(getSelectedWarehouse())
-    setSelectedWarehouseIdState(getSelectedWarehouseId())
+    loadWarehouses()
   }, [])
 
+  const loadWarehouses = async () => {
+    const { data } = await supabase.from("warehouses").select("*").order("name")
+
+    if (data && data.length > 0) {
+      setWarehouses(data)
+
+      // Restaurar bodega seleccionada de localStorage
+      const savedId = localStorage.getItem("selectedWarehouseId")
+      if (savedId === "all") {
+        setSelectedWarehouseId("all")
+        setSelectedWarehouse(null)
+        onWarehouseChange("all")
+      } else if (savedId) {
+        const warehouse = data.find((w) => w.id === savedId)
+        if (warehouse) {
+          setSelectedWarehouseId(warehouse.id)
+          setSelectedWarehouse(warehouse)
+          onWarehouseChange(warehouse.id)
+        } else {
+          // Si la bodega guardada no existe, seleccionar la primera
+          setSelectedWarehouseId(data[0].id)
+          setSelectedWarehouse(data[0])
+          localStorage.setItem("selectedWarehouseId", data[0].id)
+          onWarehouseChange(data[0].id)
+        }
+      } else {
+        // Primera vez, seleccionar la primera bodega
+        setSelectedWarehouseId(data[0].id)
+        setSelectedWarehouse(data[0])
+        localStorage.setItem("selectedWarehouseId", data[0].id)
+        onWarehouseChange(data[0].id)
+      }
+    }
+  }
+
   const resetForm = () => {
-    setFormData({ nombre: "", ubicacion: "", responsable: "", telefono: "" })
+    setFormData({ name: "", location: "", manager: "", phone: "" })
     setEditingWarehouse(null)
   }
 
-  const handleAddWarehouse = (e: React.FormEvent) => {
+  const handleAddWarehouse = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    if (!formData.nombre.trim()) {
+    if (!formData.name.trim()) {
       toast({
         title: "Error",
         description: "El nombre de la bodega es requerido",
@@ -80,44 +113,81 @@ export function WarehouseSelector({ onWarehouseChange }: WarehouseSelectorProps)
       return
     }
 
-    const newWarehouse = addWarehouse(formData)
-    setWarehouses(getWarehouses())
-    setSelectedWarehouseState(newWarehouse)
-    setSelectedWarehouseIdState(newWarehouse.id)
-    setSelectedWarehouse(newWarehouse.id)
-    onWarehouseChange(newWarehouse.id)
+    const { data: userData } = await supabase.auth.getUser()
+
+    const { data, error } = await supabase
+      .from("warehouses")
+      .insert([
+        {
+          name: formData.name,
+          location: formData.location || null,
+          manager: formData.manager || null,
+          phone: formData.phone || null,
+          created_by: userData.user?.id,
+        },
+      ])
+      .select()
+
+    if (error) {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (data && data[0]) {
+      await loadWarehouses()
+      setSelectedWarehouseId(data[0].id)
+      setSelectedWarehouse(data[0])
+      localStorage.setItem("selectedWarehouseId", data[0].id)
+      onWarehouseChange(data[0].id)
+    }
 
     resetForm()
     setIsAddDialogOpen(false)
 
     toast({
       title: "Bodega creada",
-      description: `${formData.nombre} se agregó exitosamente`,
+      description: `${formData.name} se agregó exitosamente`,
     })
   }
 
-  const handleUpdateWarehouse = (e: React.FormEvent) => {
+  const handleUpdateWarehouse = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    if (!editingWarehouse || !formData.nombre.trim()) return
+    if (!editingWarehouse || !formData.name.trim()) return
 
-    const success = updateWarehouse(editingWarehouse.id, formData)
-    if (success) {
-      setWarehouses(getWarehouses())
-      if (selectedWarehouse?.id === editingWarehouse.id) {
-        setSelectedWarehouseState(getSelectedWarehouse())
-      }
-
-      resetForm()
-
-      toast({
-        title: "Bodega actualizada",
-        description: "Los cambios se guardaron correctamente",
+    const { error } = await supabase
+      .from("warehouses")
+      .update({
+        name: formData.name,
+        location: formData.location || null,
+        manager: formData.manager || null,
+        phone: formData.phone || null,
       })
+      .eq("id", editingWarehouse.id)
+
+    if (error) {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      })
+      return
     }
+
+    await loadWarehouses()
+    resetForm()
+
+    toast({
+      title: "Bodega actualizada",
+      description: "Los cambios se guardaron correctamente",
+    })
   }
 
-  const handleDeleteWarehouse = (id: string) => {
+  const handleDeleteWarehouse = async (id: string) => {
     if (warehouses.length === 1) {
       toast({
         title: "Error",
@@ -128,36 +198,46 @@ export function WarehouseSelector({ onWarehouseChange }: WarehouseSelectorProps)
     }
 
     const warehouse = warehouses.find((w) => w.id === id)
-    const success = deleteWarehouse(id)
 
-    if (success) {
-      setWarehouses(getWarehouses())
+    const { error } = await supabase.from("warehouses").delete().eq("id", id)
 
-      if (selectedWarehouseId === id) {
-        const remaining = getWarehouses()
-        const newSelected = remaining[0] || null
-        setSelectedWarehouseState(newSelected)
-        setSelectedWarehouseIdState(newSelected?.id || null)
-        if (newSelected) {
-          setSelectedWarehouse(newSelected.id)
-          onWarehouseChange(newSelected.id)
-        } else {
-          onWarehouseChange(null)
-        }
-      }
-
+    if (error) {
       toast({
-        title: "Bodega eliminada",
-        description: `${warehouse?.nombre} se eliminó correctamente`,
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
       })
+      return
     }
+
+    await loadWarehouses()
+
+    if (selectedWarehouseId === id) {
+      const remaining = warehouses.filter((w) => w.id !== id)
+      if (remaining.length > 0) {
+        setSelectedWarehouseId(remaining[0].id)
+        setSelectedWarehouse(remaining[0])
+        localStorage.setItem("selectedWarehouseId", remaining[0].id)
+        onWarehouseChange(remaining[0].id)
+      } else {
+        setSelectedWarehouseId(null)
+        setSelectedWarehouse(null)
+        localStorage.removeItem("selectedWarehouseId")
+        onWarehouseChange(null)
+      }
+    }
+
+    toast({
+      title: "Bodega eliminada",
+      description: `${warehouse?.name} se eliminó correctamente`,
+    })
   }
 
   const handleSelectWarehouse = (warehouseId: string) => {
     if (warehouseId === "all") {
-      setSelectedWarehouseState(null)
-      setSelectedWarehouseIdState("all")
-      setSelectedWarehouse("all")
+      setSelectedWarehouseId("all")
+      setSelectedWarehouse(null)
+      localStorage.setItem("selectedWarehouseId", "all")
       onWarehouseChange("all")
       toast({
         title: "Todas las bodegas",
@@ -166,13 +246,13 @@ export function WarehouseSelector({ onWarehouseChange }: WarehouseSelectorProps)
     } else {
       const warehouse = warehouses.find((w) => w.id === warehouseId)
       if (warehouse) {
-        setSelectedWarehouseState(warehouse)
-        setSelectedWarehouseIdState(warehouse.id)
-        setSelectedWarehouse(warehouse.id)
+        setSelectedWarehouseId(warehouse.id)
+        setSelectedWarehouse(warehouse)
+        localStorage.setItem("selectedWarehouseId", warehouse.id)
         onWarehouseChange(warehouse.id)
         toast({
           title: "Bodega seleccionada",
-          description: `Trabajando con ${warehouse.nombre}`,
+          description: `Trabajando con ${warehouse.name}`,
         })
       }
     }
@@ -181,16 +261,16 @@ export function WarehouseSelector({ onWarehouseChange }: WarehouseSelectorProps)
   const startEdit = (warehouse: Warehouse) => {
     setEditingWarehouse(warehouse)
     setFormData({
-      nombre: warehouse.nombre,
-      ubicacion: warehouse.ubicacion || "",
-      responsable: warehouse.responsable || "",
-      telefono: warehouse.telefono || "",
+      name: warehouse.name,
+      location: warehouse.location || "",
+      manager: warehouse.manager || "",
+      phone: warehouse.phone || "",
     })
   }
 
   const getDisplayName = () => {
     if (selectedWarehouseId === "all") return "Todas las bodegas"
-    return selectedWarehouse?.nombre || "Seleccionar bodega"
+    return selectedWarehouse?.name || "Seleccionar bodega"
   }
 
   return (
@@ -221,7 +301,7 @@ export function WarehouseSelector({ onWarehouseChange }: WarehouseSelectorProps)
               className={selectedWarehouseId === warehouse.id ? "bg-accent" : ""}
             >
               <WarehouseIcon className="h-4 w-4 mr-2" />
-              {warehouse.nombre}
+              {warehouse.name}
             </DropdownMenuItem>
           ))}
           <DropdownMenuSeparator />
@@ -244,39 +324,39 @@ export function WarehouseSelector({ onWarehouseChange }: WarehouseSelectorProps)
           </DialogHeader>
           <form onSubmit={handleAddWarehouse} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="nombre">Nombre *</Label>
+              <Label htmlFor="name">Nombre *</Label>
               <Input
-                id="nombre"
-                value={formData.nombre}
-                onChange={(e) => setFormData({ ...formData, nombre: e.target.value })}
+                id="name"
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 placeholder="Bodega Principal"
                 required
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="ubicacion">Ubicación</Label>
+              <Label htmlFor="location">Ubicación</Label>
               <Input
-                id="ubicacion"
-                value={formData.ubicacion}
-                onChange={(e) => setFormData({ ...formData, ubicacion: e.target.value })}
+                id="location"
+                value={formData.location}
+                onChange={(e) => setFormData({ ...formData, location: e.target.value })}
                 placeholder="Calle Principal #123"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="responsable">Responsable</Label>
+              <Label htmlFor="manager">Responsable</Label>
               <Input
-                id="responsable"
-                value={formData.responsable}
-                onChange={(e) => setFormData({ ...formData, responsable: e.target.value })}
+                id="manager"
+                value={formData.manager}
+                onChange={(e) => setFormData({ ...formData, manager: e.target.value })}
                 placeholder="Juan Pérez"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="telefono">Teléfono</Label>
+              <Label htmlFor="phone">Teléfono</Label>
               <Input
-                id="telefono"
-                value={formData.telefono}
-                onChange={(e) => setFormData({ ...formData, telefono: e.target.value })}
+                id="phone"
+                value={formData.phone}
+                onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
                 placeholder="+57 300 123 4567"
               />
             </div>
@@ -307,11 +387,11 @@ export function WarehouseSelector({ onWarehouseChange }: WarehouseSelectorProps)
             {warehouses.map((warehouse) => (
               <div key={warehouse.id} className="flex items-center justify-between p-3 rounded-lg border bg-card">
                 <div className="flex-1">
-                  <p className="font-medium">{warehouse.nombre}</p>
+                  <p className="font-medium">{warehouse.name}</p>
                   <div className="text-xs text-muted-foreground space-y-0.5 mt-1">
-                    {warehouse.ubicacion && <p>Ubicación: {warehouse.ubicacion}</p>}
-                    {warehouse.responsable && <p>Responsable: {warehouse.responsable}</p>}
-                    {warehouse.telefono && <p>Tel: {warehouse.telefono}</p>}
+                    {warehouse.location && <p>Ubicación: {warehouse.location}</p>}
+                    {warehouse.manager && <p>Responsable: {warehouse.manager}</p>}
+                    {warehouse.phone && <p>Tel: {warehouse.phone}</p>}
                   </div>
                 </div>
                 <div className="flex gap-1">
@@ -328,36 +408,36 @@ export function WarehouseSelector({ onWarehouseChange }: WarehouseSelectorProps)
                       </DialogHeader>
                       <form onSubmit={handleUpdateWarehouse} className="space-y-4">
                         <div className="space-y-2">
-                          <Label htmlFor="edit-nombre">Nombre *</Label>
+                          <Label htmlFor="edit-name">Nombre *</Label>
                           <Input
-                            id="edit-nombre"
-                            value={formData.nombre}
-                            onChange={(e) => setFormData({ ...formData, nombre: e.target.value })}
+                            id="edit-name"
+                            value={formData.name}
+                            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                             required
                           />
                         </div>
                         <div className="space-y-2">
-                          <Label htmlFor="edit-ubicacion">Ubicación</Label>
+                          <Label htmlFor="edit-location">Ubicación</Label>
                           <Input
-                            id="edit-ubicacion"
-                            value={formData.ubicacion}
-                            onChange={(e) => setFormData({ ...formData, ubicacion: e.target.value })}
+                            id="edit-location"
+                            value={formData.location}
+                            onChange={(e) => setFormData({ ...formData, location: e.target.value })}
                           />
                         </div>
                         <div className="space-y-2">
-                          <Label htmlFor="edit-responsable">Responsable</Label>
+                          <Label htmlFor="edit-manager">Responsable</Label>
                           <Input
-                            id="edit-responsable"
-                            value={formData.responsable}
-                            onChange={(e) => setFormData({ ...formData, responsable: e.target.value })}
+                            id="edit-manager"
+                            value={formData.manager}
+                            onChange={(e) => setFormData({ ...formData, manager: e.target.value })}
                           />
                         </div>
                         <div className="space-y-2">
-                          <Label htmlFor="edit-telefono">Teléfono</Label>
+                          <Label htmlFor="edit-phone">Teléfono</Label>
                           <Input
-                            id="edit-telefono"
-                            value={formData.telefono}
-                            onChange={(e) => setFormData({ ...formData, telefono: e.target.value })}
+                            id="edit-phone"
+                            value={formData.phone}
+                            onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
                           />
                         </div>
                         <DialogFooter>

@@ -1,104 +1,137 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { getCurrentUser, logout, type User } from "@/lib/auth"
-import {
-  getInventoryItems,
-  addInventoryItem,
-  updateInventoryItem,
-  deleteInventoryItem,
-  importFromCSV,
-  getInventoryMovements,
-  checkAndResetDay,
-  registerMovement,
-  type InventoryItem,
-} from "@/lib/inventory"
-import { getSelectedWarehouseId, getSelectedWarehouse, type Warehouse } from "@/lib/warehouse"
-import { LoginForm } from "@/components/login-form"
+import { createClient } from "@/lib/supabase/client"
+import { useRouter } from "next/navigation"
 import { InventoryTable } from "@/components/inventory-table"
 import { AddItemForm } from "@/components/add-item-form"
 import { CSVImporter } from "@/components/csv-importer"
 import { ReportsGenerator } from "@/components/reports-generator"
 import { WarehouseSelector } from "@/components/warehouse-selector"
+import { UserManagement } from "@/components/user-management"
 import { Button } from "@/components/ui/button"
 import { useToast } from "@/hooks/use-toast"
 import { Toaster } from "@/components/ui/toaster"
-import { LogOut, Package, BarChart3, FileText, Building2, Clipboard } from "lucide-react"
+import { LogOut, Package, BarChart3, FileText, Building2, Clipboard, Users } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
+interface InventoryItem {
+  id: string
+  warehouse_id: string
+  warehouse_name?: string
+  code: string
+  name: string
+  price: number
+  quantity_available: number
+  quantity_initial_today: number
+  quantity_used_today: number
+  updated_at: string
+}
+
+interface Movement {
+  id: string
+  item_id: string
+  warehouse_id: string
+  movement_type: string
+  quantity_before: number
+  quantity_change: number
+  quantity_after: number
+  description: string
+  created_at: string
+}
+
 export default function Home() {
-  const [user, setUser] = useState<User | null>(null)
   const [items, setItems] = useState<InventoryItem[]>([])
-  const [mounted, setMounted] = useState(false)
+  const [movements, setMovements] = useState<Movement[]>([])
   const [selectedWarehouseId, setSelectedWarehouseId] = useState<string | null>(null)
-  const [selectedWarehouse, setSelectedWarehouse] = useState<Warehouse | null>(null)
+  const [currentUser, setCurrentUser] = useState<any>(null)
+  const [isLoading, setIsLoading] = useState(true)
   const { toast } = useToast()
+  const router = useRouter()
+  const supabase = createClient()
 
   useEffect(() => {
-    setMounted(true)
-    const currentUser = getCurrentUser()
-    setUser(currentUser)
-    if (currentUser) {
-      const warehouseId = getSelectedWarehouseId()
-      const warehouse = getSelectedWarehouse()
-      setSelectedWarehouseId(warehouseId)
-      setSelectedWarehouse(warehouse)
-
-      if (warehouseId) {
-        if (warehouseId !== "all") {
-          checkAndResetDay(warehouseId)
-        }
-        setItems(getInventoryItems(warehouseId))
-      }
-    }
+    loadUser()
   }, [])
 
-  const handleLoginSuccess = () => {
-    const currentUser = getCurrentUser()
-    setUser(currentUser)
-
-    const warehouseId = getSelectedWarehouseId()
-    const warehouse = getSelectedWarehouse()
-    setSelectedWarehouseId(warehouseId)
-    setSelectedWarehouse(warehouse)
-
-    if (warehouseId) {
-      setItems(getInventoryItems(warehouseId))
+  useEffect(() => {
+    if (selectedWarehouseId) {
+      loadItems()
+      loadMovements()
+      resetDailyQuantities()
     }
+  }, [selectedWarehouseId])
 
-    toast({
-      title: "¡Bienvenido!",
-      description: `Has iniciado sesión correctamente`,
-    })
+  const loadUser = async () => {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (user) {
+      const { data } = await supabase.from("users").select("*").eq("id", user.id).single()
+      setCurrentUser(data)
+    }
+    setIsLoading(false)
   }
 
-  const handleLogout = () => {
-    logout()
-    setUser(null)
-    setItems([])
-    setSelectedWarehouseId(null)
-    setSelectedWarehouse(null)
-    toast({
-      title: "Sesión cerrada",
-      description: "Has cerrado sesión exitosamente",
-    })
+  const loadItems = async () => {
+    if (!selectedWarehouseId) return
+
+    let query = supabase.from("inventory_items").select(`
+        *,
+        warehouses:warehouse_id (
+          name
+        )
+      `)
+
+    if (selectedWarehouseId !== "all") {
+      query = query.eq("warehouse_id", selectedWarehouseId)
+    }
+
+    const { data, error } = await query.order("name")
+
+    if (data) {
+      const formattedItems = data.map((item: any) => ({
+        ...item,
+        warehouse_name: item.warehouses?.name || "",
+      }))
+      setItems(formattedItems)
+    }
+  }
+
+  const loadMovements = async () => {
+    if (!selectedWarehouseId) return
+
+    let query = supabase.from("inventory_movements").select("*")
+
+    if (selectedWarehouseId !== "all") {
+      query = query.eq("warehouse_id", selectedWarehouseId)
+    }
+
+    const { data } = await query.order("created_at", { ascending: false }).limit(100)
+
+    if (data) {
+      setMovements(data)
+    }
+  }
+
+  const resetDailyQuantities = async () => {
+    // Llamar a la función SQL que resetea las cantidades diarias
+    await supabase.rpc("reset_daily_quantities")
+    await loadItems()
+  }
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut()
+    router.push("/auth/login")
+    router.refresh()
   }
 
   const handleWarehouseChange = (warehouseId: string | null) => {
     setSelectedWarehouseId(warehouseId)
-    setSelectedWarehouse(getSelectedWarehouse())
-    if (warehouseId) {
-      if (warehouseId !== "all") {
-        checkAndResetDay(warehouseId)
-      }
-      setItems(getInventoryItems(warehouseId))
-    } else {
-      setItems([])
-    }
   }
 
-  const handleAddItem = (
+  const handleAddItem = async (
     itemData: { codigo: string; nombre: string; cantidad: number; precio: number },
     warehouseId?: string,
   ) => {
@@ -113,57 +146,182 @@ export default function Home() {
       return
     }
 
-    const newItem = addInventoryItem(itemData, targetWarehouseId)
-    setItems(getInventoryItems(selectedWarehouseId))
+    const { data: userData } = await supabase.auth.getUser()
+
+    const { data, error } = await supabase
+      .from("inventory_items")
+      .insert([
+        {
+          warehouse_id: targetWarehouseId,
+          code: itemData.codigo,
+          name: itemData.nombre,
+          price: itemData.precio,
+          quantity_available: itemData.cantidad,
+          quantity_initial_today: itemData.cantidad,
+          quantity_used_today: 0,
+          created_by: userData.user?.id,
+        },
+      ])
+      .select()
+
+    if (error) {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      })
+      return
+    }
+
+    // Registrar movimiento de creación
+    if (data && data[0]) {
+      await supabase.from("inventory_movements").insert([
+        {
+          item_id: data[0].id,
+          warehouse_id: targetWarehouseId,
+          movement_type: "creacion",
+          quantity_before: 0,
+          quantity_change: itemData.cantidad,
+          quantity_after: itemData.cantidad,
+          description: `Producto creado: ${itemData.nombre}`,
+          created_by: userData.user?.id,
+        },
+      ])
+    }
+
+    await loadItems()
     toast({
       title: "Producto agregado",
       description: `${itemData.nombre} se agregó al inventario`,
     })
   }
 
-  const handleUpdateItem = (id: string, updates: Partial<InventoryItem>) => {
-    const success = updateInventoryItem(id, updates, selectedWarehouseId)
-    if (success) {
-      setItems(getInventoryItems(selectedWarehouseId))
-      toast({
-        title: "Producto actualizado",
-        description: "Los cambios se guardaron correctamente",
-      })
-    }
-  }
+  const handleUpdateItem = async (id: string, updates: Partial<InventoryItem>) => {
+    const { data: userData } = await supabase.auth.getUser()
 
-  const handleDeleteItem = (id: string) => {
-    const item = items.find((i) => i.id === id)
-    const success = deleteInventoryItem(id, selectedWarehouseId)
-    if (success) {
-      setItems(getInventoryItems(selectedWarehouseId))
-      toast({
-        title: "Producto eliminado",
-        description: `${item?.nombre} se eliminó del inventario`,
-      })
-    }
-  }
+    // Obtener el item antes de actualizar
+    const { data: oldItem } = await supabase.from("inventory_items").select("*").eq("id", id).single()
 
-  const handleMovement = (id: string, cantidad: number, tipo: "entrada" | "salida") => {
-    const item = items.find((i) => i.id === id)
-    const success = registerMovement(id, cantidad, tipo, selectedWarehouseId)
+    const { error } = await supabase.from("inventory_items").update(updates).eq("id", id)
 
-    if (success) {
-      setItems(getInventoryItems(selectedWarehouseId))
-      toast({
-        title: tipo === "entrada" ? "Entrada registrada" : "Salida registrada",
-        description: `${cantidad} unidades de ${item?.nombre} ${tipo === "entrada" ? "agregadas" : "retiradas"}`,
-      })
-    } else {
+    if (error) {
       toast({
         title: "Error",
-        description: "No se pudo registrar el movimiento. Verifica el stock disponible.",
+        description: error.message,
         variant: "destructive",
       })
+      return
     }
+
+    // Registrar movimiento de edición
+    if (oldItem) {
+      await supabase.from("inventory_movements").insert([
+        {
+          item_id: id,
+          warehouse_id: oldItem.warehouse_id,
+          movement_type: "edicion",
+          quantity_before: oldItem.quantity_available,
+          quantity_change: 0,
+          quantity_after: updates.quantity_available || oldItem.quantity_available,
+          description: `Producto editado`,
+          created_by: userData.user?.id,
+        },
+      ])
+    }
+
+    await loadItems()
+    toast({
+      title: "Producto actualizado",
+      description: "Los cambios se guardaron correctamente",
+    })
   }
 
-  const handleImport = (csvText: string) => {
+  const handleDeleteItem = async (id: string) => {
+    const item = items.find((i) => i.id === id)
+
+    const { error } = await supabase.from("inventory_items").delete().eq("id", id)
+
+    if (error) {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      })
+      return
+    }
+
+    await loadItems()
+    toast({
+      title: "Producto eliminado",
+      description: `${item?.name} se eliminó del inventario`,
+    })
+  }
+
+  const handleMovement = async (id: string, cantidad: number, tipo: "entrada" | "salida") => {
+    const item = items.find((i) => i.id === id)
+    if (!item) return
+
+    const { data: userData } = await supabase.auth.getUser()
+
+    let newQuantity = item.quantity_available
+    let newUsedToday = item.quantity_used_today
+
+    if (tipo === "entrada") {
+      newQuantity += cantidad
+    } else {
+      if (cantidad > item.quantity_available) {
+        toast({
+          title: "Error",
+          description: "No hay suficiente stock disponible",
+          variant: "destructive",
+        })
+        return
+      }
+      newQuantity -= cantidad
+      newUsedToday += cantidad
+    }
+
+    const { error } = await supabase
+      .from("inventory_items")
+      .update({
+        quantity_available: newQuantity,
+        quantity_used_today: newUsedToday,
+      })
+      .eq("id", id)
+
+    if (error) {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      })
+      return
+    }
+
+    // Registrar movimiento
+    await supabase.from("inventory_movements").insert([
+      {
+        item_id: id,
+        warehouse_id: item.warehouse_id,
+        movement_type: tipo,
+        quantity_before: item.quantity_available,
+        quantity_change: tipo === "entrada" ? cantidad : -cantidad,
+        quantity_after: newQuantity,
+        description: `${tipo === "entrada" ? "Entrada" : "Salida"} de ${cantidad} unidades`,
+        created_by: userData.user?.id,
+      },
+    ])
+
+    await loadItems()
+    await loadMovements()
+
+    toast({
+      title: tipo === "entrada" ? "Entrada registrada" : "Salida registrada",
+      description: `${cantidad} unidades de ${item.name} ${tipo === "entrada" ? "agregadas" : "retiradas"}`,
+    })
+  }
+
+  const handleImport = async (csvText: string) => {
     if (selectedWarehouseId === "all") {
       toast({
         title: "Error",
@@ -173,39 +331,107 @@ export default function Home() {
       return
     }
 
-    const result = importFromCSV(csvText, selectedWarehouseId)
-    setItems(getInventoryItems(selectedWarehouseId))
+    const { data: userData } = await supabase.auth.getUser()
 
-    if (result.success) {
+    const lines = csvText.trim().split("\n")
+    const headers = lines[0].toLowerCase()
+
+    if (
+      !headers.includes("codigo") ||
+      !headers.includes("nombre") ||
+      !headers.includes("cantidad") ||
+      !headers.includes("precio")
+    ) {
+      toast({
+        title: "Error en el formato",
+        description: "El archivo CSV debe tener las columnas: Codigo, Nombre, Cantidad, Precio",
+        variant: "destructive",
+      })
+      return
+    }
+
+    let successCount = 0
+    let errorCount = 0
+
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i].trim()
+      if (!line) continue
+
+      const values = line.split(",").map((v) => v.trim())
+      const [codigo, nombre, cantidad, precio] = values
+
+      try {
+        const { data, error } = await supabase
+          .from("inventory_items")
+          .insert([
+            {
+              warehouse_id: selectedWarehouseId,
+              code: codigo,
+              name: nombre,
+              price: Number.parseFloat(precio),
+              quantity_available: Number.parseInt(cantidad),
+              quantity_initial_today: Number.parseInt(cantidad),
+              quantity_used_today: 0,
+              created_by: userData.user?.id,
+            },
+          ])
+          .select()
+
+        if (error) throw error
+
+        // Registrar movimiento
+        if (data && data[0]) {
+          await supabase.from("inventory_movements").insert([
+            {
+              item_id: data[0].id,
+              warehouse_id: selectedWarehouseId,
+              movement_type: "creacion",
+              quantity_before: 0,
+              quantity_change: Number.parseInt(cantidad),
+              quantity_after: Number.parseInt(cantidad),
+              description: `Producto importado: ${nombre}`,
+              created_by: userData.user?.id,
+            },
+          ])
+        }
+
+        successCount++
+      } catch (err) {
+        errorCount++
+      }
+    }
+
+    await loadItems()
+
+    if (successCount > 0) {
       toast({
         title: "Importación exitosa",
-        description: `Se importaron ${result.count} productos`,
+        description: `Se importaron ${successCount} productos${errorCount > 0 ? ` (${errorCount} errores)` : ""}`,
       })
     } else {
       toast({
         title: "Error en importación",
-        description: result.errors[0] || "No se pudieron importar los datos",
+        description: "No se pudieron importar los productos",
         variant: "destructive",
       })
     }
-
-    if (result.errors.length > 0 && result.count > 0) {
-      console.log("Errores durante la importación:", result.errors)
-    }
   }
 
-  if (!mounted) {
-    return null
-  }
-
-  if (!user) {
-    return <LoginForm onLoginSuccess={handleLoginSuccess} />
+  if (isLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="text-center">
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent mx-auto" />
+          <p className="mt-4 text-muted-foreground">Cargando...</p>
+        </div>
+      </div>
+    )
   }
 
   const totalProductos = items.length
-  const totalUnidades = items.reduce((sum, item) => sum + item.cantidadDisponible, 0)
-  const totalUsado = items.reduce((sum, item) => sum + item.cantidadUsada, 0)
-  const valorTotal = items.reduce((sum, item) => sum + item.cantidadDisponible * item.precio, 0)
+  const totalUnidades = items.reduce((sum, item) => sum + item.quantity_available, 0)
+  const totalUsado = items.reduce((sum, item) => sum + item.quantity_used_today, 0)
+  const valorTotal = items.reduce((sum, item) => sum + item.quantity_available * item.price, 0)
 
   return (
     <div className="min-h-screen bg-background">
@@ -218,6 +444,11 @@ export default function Home() {
               </div>
               <div>
                 <h1 className="text-lg sm:text-xl font-bold">Sistema de Inventario</h1>
+                {currentUser && (
+                  <p className="text-xs text-muted-foreground">
+                    {currentUser.full_name} {currentUser.is_admin && "• Admin"}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -283,7 +514,9 @@ export default function Home() {
             </div>
 
             <Tabs defaultValue="inventario" className="space-y-4">
-              <TabsList className="grid w-full grid-cols-3 lg:w-auto lg:inline-grid">
+              <TabsList
+                className={`grid w-full ${currentUser?.is_admin ? "grid-cols-4" : "grid-cols-3"} lg:w-auto lg:inline-grid`}
+              >
                 <TabsTrigger value="inventario" className="gap-2">
                   <Clipboard className="h-4 w-4" />
                   Inventario
@@ -296,6 +529,12 @@ export default function Home() {
                   <FileText className="h-4 w-4" />
                   Informes
                 </TabsTrigger>
+                {currentUser?.is_admin && (
+                  <TabsTrigger value="usuarios" className="gap-2">
+                    <Users className="h-4 w-4" />
+                    Usuarios
+                  </TabsTrigger>
+                )}
               </TabsList>
 
               <TabsContent value="inventario" className="space-y-4">
@@ -337,8 +576,14 @@ export default function Home() {
                     Descarga reportes completos en formato Excel, Word o PDF
                   </p>
                 </div>
-                <ReportsGenerator items={items} movements={getInventoryMovements(selectedWarehouseId)} />
+                <ReportsGenerator items={items} movements={movements} />
               </TabsContent>
+
+              {currentUser?.is_admin && (
+                <TabsContent value="usuarios" className="space-y-4">
+                  <UserManagement />
+                </TabsContent>
+              )}
             </Tabs>
           </div>
         ) : (
