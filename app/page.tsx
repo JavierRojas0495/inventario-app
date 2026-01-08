@@ -623,8 +623,86 @@ export default function Home() {
       const line = lines[i].trim()
       if (!line) continue
 
-      const values = line.split(",").map((v) => v.trim())
-      const [codigo, nombre, cantidad, precio] = values
+      // Parsear CSV correctamente, manejando valores entre comillas
+      const parseCSVLine = (line: string): string[] => {
+        const values: string[] = []
+        let currentValue = ""
+        let insideQuotes = false
+
+        for (let j = 0; j < line.length; j++) {
+          const char = line[j]
+          
+          if (char === '"') {
+            if (insideQuotes && line[j + 1] === '"') {
+              // Comilla escapada
+              currentValue += '"'
+              j++ // Saltar la siguiente comilla
+            } else {
+              // Toggle del estado de comillas
+              insideQuotes = !insideQuotes
+            }
+          } else if (char === ',' && !insideQuotes) {
+            // Fin del valor
+            values.push(currentValue.trim().replace(/^"|"$/g, ""))
+            currentValue = ""
+          } else {
+            currentValue += char
+          }
+        }
+        // Agregar el último valor
+        values.push(currentValue.trim().replace(/^"|"$/g, ""))
+        return values
+      }
+
+      const values = parseCSVLine(line)
+
+      // El importador espera: Código, Nombre, Cantidad, Precio
+      // El CSV exportado ahora tiene: Código, Nombre, Cantidad, Precio (formato compatible)
+      // Pero también puede recibir el formato antiguo con más columnas
+      let codigo = values[0] || ""
+      let nombre = values[1] || ""
+      let cantidadStr = ""
+      let precioStr = ""
+
+      // Determinar qué columnas usar según los headers
+      const headerArray = headers.split(",").map(h => h.trim().toLowerCase())
+      
+      if (values.length === 4 && headerArray.length === 4) {
+        // Formato simple: Código, Nombre, Cantidad, Precio
+        cantidadStr = values[2] || ""
+        precioStr = values[3] || ""
+      } else {
+        // Formato con más columnas, buscar las correctas
+        const codigoIndex = headerArray.findIndex(h => h.includes("codigo") || h.includes("código"))
+        const nombreIndex = headerArray.findIndex(h => h.includes("nombre"))
+        const cantidadIndex = headerArray.findIndex(h => h.includes("cantidad") || h.includes("disponible"))
+        const precioIndex = headerArray.findIndex(h => h.includes("precio") && !h.includes("total"))
+
+        if (codigoIndex >= 0) codigo = values[codigoIndex] || ""
+        if (nombreIndex >= 0) nombre = values[nombreIndex] || ""
+        if (cantidadIndex >= 0) cantidadStr = values[cantidadIndex] || ""
+        if (precioIndex >= 0) precioStr = values[precioIndex] || ""
+
+        // Si no encontramos cantidad o precio, usar valores por defecto
+        if (!cantidadStr && values.length >= 3) cantidadStr = values[2] || ""
+        if (!precioStr && values.length >= 4) precioStr = values[3] || ""
+      }
+
+      // Validar que tengamos los valores necesarios
+      if (!codigo || !nombre) {
+        errorCount++
+        console.error(`Línea ${i + 1}: Código o nombre vacío`)
+        continue
+      }
+
+      const cantidadNum = Number.parseFloat(cantidadStr)
+      const precioNum = Number.parseFloat(precioStr)
+
+      if (isNaN(cantidadNum) || isNaN(precioNum) || cantidadNum < 0 || precioNum < 0) {
+        errorCount++
+        console.error(`Línea ${i + 1}: Cantidad o precio inválido (${cantidadStr}, ${precioStr})`)
+        continue
+      }
 
       try {
         const { data, error } = await supabase
@@ -634,9 +712,9 @@ export default function Home() {
               warehouse_id: selectedWarehouseId,
               code: codigo,
               name: nombre,
-              price: Number.parseFloat(precio),
-              quantity_available: Number.parseInt(cantidad),
-              quantity_initial_today: Number.parseInt(cantidad),
+              price: precioNum,
+              quantity_available: Math.floor(cantidadNum),
+              quantity_initial_today: Math.floor(cantidadNum),
               quantity_used_today: 0,
               created_by: userData.user?.id,
             },

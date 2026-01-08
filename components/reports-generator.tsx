@@ -20,47 +20,28 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
         return
       }
 
+      // Usar formato compatible con el importador: Código, Nombre, Cantidad, Precio
       const headers = [
         "Código",
         "Nombre",
-        "Inicial",
-        "Usado Hoy",
-        "Disponible",
+        "Cantidad",
         "Precio",
-        "Valor Total",
-        "Fecha Actualización",
       ]
       const rows = items
         .filter((item) => item && item.id) // Filtrar items inválidos
         .map((item) => {
         const codigo = item.codigo || item.code || ""
         const nombre = item.nombre || item.name || ""
-        const cantidadInicial = item.cantidadInicial ?? item.quantity_initial_today ?? 0
-        const cantidadUsada = item.cantidadUsada ?? item.quantity_used_today ?? 0
         const cantidadDisponible = item.cantidadDisponible ?? item.quantity_available ?? 0
         const precio = item.precio ?? item.price ?? 0
-        const fechaActualizacion = item.fechaActualizacion || item.updated_at || item.created_at || new Date().toISOString()
 
-        // Validar y formatear fecha
-        let fechaFormateada = "Fecha inválida"
-        try {
-          const fecha = new Date(fechaActualizacion)
-          if (!isNaN(fecha.getTime())) {
-            fechaFormateada = fecha.toLocaleString("es-ES")
-          }
-        } catch (e) {
-          console.error("Error al formatear fecha en CSV:", e, fechaActualizacion)
-        }
-
+        // Exportar solo las columnas necesarias para importar: Código, Nombre, Cantidad, Precio
+        // Usar cantidadDisponible como "Cantidad" para que sea compatible con el importador
         return [
           codigo,
           nombre,
-          cantidadInicial.toString(),
-          cantidadUsada.toString(),
           cantidadDisponible.toString(),
           precio.toFixed(2),
-          (cantidadDisponible * precio).toFixed(2),
-          fechaFormateada,
         ]
       })
 
