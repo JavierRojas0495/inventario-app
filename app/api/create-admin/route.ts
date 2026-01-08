@@ -4,11 +4,14 @@ import { createClient } from "@supabase/supabase-js"
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { email, password, username, fullName } = body
+    const { email, password, username, fullName, isAdmin } = body
 
     if (!email || !password || !username || !fullName) {
       return NextResponse.json({ error: "Faltan campos requeridos" }, { status: 400 })
     }
+
+    // isAdmin es opcional, por defecto false
+    const userIsAdmin = isAdmin === true || isAdmin === "true"
 
     // Usar Service Role Key para crear el usuario directamente
     const supabaseUrl = process.env.SUPABASE_URL || "https://meykdavbhagnvcpocmjj.supabase.co"
@@ -39,7 +42,7 @@ export async function POST(request: NextRequest) {
         user_metadata: {
           username,
           full_name: fullName,
-          is_admin: true,
+          is_admin: userIsAdmin,
         },
       })
 
@@ -55,7 +58,7 @@ export async function POST(request: NextRequest) {
             id: existingUser.id,
             username,
             full_name: fullName,
-            is_admin: true,
+            is_admin: userIsAdmin,
           },
           { onConflict: "id" }
         )
@@ -79,7 +82,7 @@ export async function POST(request: NextRequest) {
       user_metadata: {
         username,
         full_name: fullName,
-        is_admin: true,
+        is_admin: userIsAdmin,
       },
     })
 
@@ -96,7 +99,7 @@ export async function POST(request: NextRequest) {
       id: newUser.user.id,
       username,
       full_name: fullName,
-      is_admin: true,
+      is_admin: userIsAdmin,
     })
 
     if (profileError) {
@@ -108,7 +111,7 @@ export async function POST(request: NextRequest) {
             id: newUser.user.id,
             username,
             full_name: fullName,
-            is_admin: true,
+            is_admin: userIsAdmin,
           },
           { onConflict: "id" }
         )

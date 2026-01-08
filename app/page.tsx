@@ -47,11 +47,31 @@ export default function Home() {
   const [selectedWarehouseId, setSelectedWarehouseId] = useState<string | null>(null)
   const [currentUser, setCurrentUser] = useState<any>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const { toast } = useToast()
   const router = useRouter()
-  const supabase = createClient()
+  
+  // Crear cliente de Supabase con manejo de errores
+  let supabase
+  try {
+    supabase = createClient()
+  } catch (err: any) {
+    console.error("Error al inicializar Supabase:", err)
+    // Si hay error, mostrar mensaje pero continuar (el error se mostrará en el componente)
+  }
 
   useEffect(() => {
+    if (!supabase) {
+      const errorMsg = "Error de configuración: No se pudo conectar con la base de datos. Por favor, verifica las variables de entorno."
+      setError(errorMsg)
+      setIsLoading(false)
+      toast({
+        title: "Error de configuración",
+        description: "No se pudo conectar con la base de datos. Por favor, recarga la página.",
+        variant: "destructive",
+      })
+      return
+    }
     loadUser()
   }, [])
 
@@ -64,14 +84,34 @@ export default function Home() {
   }, [selectedWarehouseId])
 
   const loadUser = async () => {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (user) {
-      const { data } = await supabase.from("users").select("*").eq("id", user.id).single()
-      setCurrentUser(data)
+    if (!supabase) return
+    
+    try {
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser()
+      
+      if (authError) {
+        console.error("Error de autenticación:", authError)
+        setError("Error de autenticación. Por favor, inicia sesión nuevamente.")
+        router.push("/auth/login")
+        return
+      }
+      
+      if (user) {
+        const { data, error: userError } = await supabase.from("users").select("*").eq("id", user.id).single()
+        if (userError) {
+          console.error("Error al cargar usuario:", userError)
+        }
+        setCurrentUser(data)
+      }
+    } catch (err: any) {
+      console.error("Error inesperado al cargar usuario:", err)
+      setError(err.message || "Error al cargar información del usuario")
+    } finally {
+      setIsLoading(false)
     }
-    setIsLoading(false)
   }
 
   const loadItems = async () => {
@@ -90,35 +130,59 @@ export default function Home() {
 
     const { data, error } = await query.order("name")
 
-    if (data) {
-      const formattedItems = data.map((item: any) => ({
-        ...item,
-        warehouse_name: item.warehouses?.name || "",
-      }))
-      setItems(formattedItems)
-    }
+      if (data) {
+        const formattedItems = data.map((item: any) => ({
+          ...item,
+          warehouse_name: item.warehouses?.name || "",
+          // Mapear campos de Supabase a formato esperado por componentes
+          codigo: item.code || item.codigo || "",
+          nombre: item.name || item.nombre || "",
+          cantidadDisponible: item.quantity_available || item.cantidadDisponible || 0,
+          cantidadInicial: item.quantity_initial_today || item.cantidadInicial || 0,
+          cantidadUsada: item.quantity_used_today || item.cantidadUsada || 0,
+          precio: item.price || item.precio || 0,
+          fechaActualizacion: item.updated_at || item.fechaActualizacion || item.created_at || new Date().toISOString(),
+          warehouseId: item.warehouse_id || item.warehouseId || "",
+        }))
+        setItems(formattedItems)
+      }
   }
 
   const loadMovements = async () => {
-    if (!selectedWarehouseId) return
+    if (!selectedWarehouseId || !supabase) return
 
-    let query = supabase.from("inventory_movements").select("*")
+    try {
+      let query = supabase.from("inventory_movements").select("*")
 
-    if (selectedWarehouseId !== "all") {
-      query = query.eq("warehouse_id", selectedWarehouseId)
-    }
+      if (selectedWarehouseId !== "all") {
+        query = query.eq("warehouse_id", selectedWarehouseId)
+      }
 
-    const { data } = await query.order("created_at", { ascending: false }).limit(100)
+      const { data, error } = await query.order("created_at", { ascending: false }).limit(100)
 
-    if (data) {
-      setMovements(data)
+      if (error) {
+        console.error("Error al cargar movimientos:", error)
+        return
+      }
+
+      if (data) {
+        setMovements(data)
+      }
+    } catch (err: any) {
+      console.error("Error inesperado al cargar movimientos:", err)
     }
   }
 
   const resetDailyQuantities = async () => {
-    // Llamar a la función SQL que resetea las cantidades diarias
-    await supabase.rpc("reset_daily_quantities")
-    await loadItems()
+    if (!supabase) return
+    try {
+      // Llamar a la función SQL que resetea las cantidades diarias
+      await supabase.rpc("reset_daily_quantities")
+      await loadItems()
+    } catch (err: any) {
+      console.error("Error al resetear cantidades diarias:", err)
+      // Continuar aunque falle el reset
+    }
   }
 
   const handleLogout = async () => {
@@ -135,65 +199,102 @@ export default function Home() {
     itemData: { codigo: string; nombre: string; cantidad: number; precio: number },
     warehouseId?: string,
   ) => {
-    const targetWarehouseId = warehouseId || selectedWarehouseId
+    try {
+      const targetWarehouseId = warehouseId || selectedWarehouseId
 
-    if (targetWarehouseId === "all") {
+      if (!targetWarehouseId || targetWarehouseId === "all") {
+        toast({
+          title: "Error",
+          description: "Debes seleccionar una bodega específica para agregar productos",
+          variant: "destructive",
+        })
+        return
+      }
+
+      const { data: userData, error: userError } = await supabase.auth.getUser()
+
+      if (userError || !userData.user) {
+        toast({
+          title: "Error de autenticación",
+          description: "No se pudo verificar tu sesión. Por favor, inicia sesión nuevamente.",
+          variant: "destructive",
+        })
+        return
+      }
+
+      const { data, error } = await supabase
+        .from("inventory_items")
+        .insert([
+          {
+            warehouse_id: targetWarehouseId,
+            code: itemData.codigo,
+            name: itemData.nombre,
+            price: itemData.precio,
+            quantity_available: itemData.cantidad,
+            quantity_initial_today: itemData.cantidad,
+            quantity_used_today: 0,
+            created_by: userData.user.id,
+          },
+        ])
+        .select()
+
+      if (error) {
+        console.error("Error al crear producto:", error)
+        toast({
+          title: "Error",
+          description: error.message || "No se pudo crear el producto. Verifica los datos e intenta nuevamente.",
+          variant: "destructive",
+        })
+        return
+      }
+
+      if (!data || !data[0]) {
+        toast({
+          title: "Error",
+          description: "El producto se creó pero no se pudo obtener la información. Por favor, recarga la página.",
+          variant: "destructive",
+        })
+        await loadItems()
+        return
+      }
+
+      // Registrar movimiento de creación
+      try {
+        const { error: movementError } = await supabase.from("inventory_movements").insert([
+          {
+            item_id: data[0].id,
+            warehouse_id: targetWarehouseId,
+            movement_type: "creacion",
+            quantity_before: 0,
+            quantity_change: itemData.cantidad,
+            quantity_after: itemData.cantidad,
+            description: `Producto creado: ${itemData.nombre}`,
+            created_by: userData.user.id,
+          },
+        ])
+
+        if (movementError) {
+          console.error("Error al registrar movimiento:", movementError)
+          // No bloqueamos el flujo si falla el movimiento, solo lo registramos
+        }
+      } catch (movementErr) {
+        console.error("Error al registrar movimiento:", movementErr)
+        // Continuamos aunque falle el movimiento
+      }
+
+      await loadItems()
       toast({
-        title: "Error",
-        description: "Debes seleccionar una bodega específica para agregar productos",
+        title: "Producto agregado",
+        description: `${itemData.nombre} se agregó al inventario`,
+      })
+    } catch (error: any) {
+      console.error("Error inesperado al agregar producto:", error)
+      toast({
+        title: "Error inesperado",
+        description: error.message || "Ocurrió un error inesperado. Por favor, intenta nuevamente.",
         variant: "destructive",
       })
-      return
     }
-
-    const { data: userData } = await supabase.auth.getUser()
-
-    const { data, error } = await supabase
-      .from("inventory_items")
-      .insert([
-        {
-          warehouse_id: targetWarehouseId,
-          code: itemData.codigo,
-          name: itemData.nombre,
-          price: itemData.precio,
-          quantity_available: itemData.cantidad,
-          quantity_initial_today: itemData.cantidad,
-          quantity_used_today: 0,
-          created_by: userData.user?.id,
-        },
-      ])
-      .select()
-
-    if (error) {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      })
-      return
-    }
-
-    // Registrar movimiento de creación
-    if (data && data[0]) {
-      await supabase.from("inventory_movements").insert([
-        {
-          item_id: data[0].id,
-          warehouse_id: targetWarehouseId,
-          movement_type: "creacion",
-          quantity_before: 0,
-          quantity_change: itemData.cantidad,
-          quantity_after: itemData.cantidad,
-          description: `Producto creado: ${itemData.nombre}`,
-          created_by: userData.user?.id,
-        },
-      ])
-    }
-
-    await loadItems()
-    toast({
-      title: "Producto agregado",
-      description: `${itemData.nombre} se agregó al inventario`,
-    })
   }
 
   const handleUpdateItem = async (id: string, updates: Partial<InventoryItem>) => {
@@ -331,12 +432,32 @@ export default function Home() {
       return
     }
 
+    if (!supabase) {
+      toast({
+        title: "Error",
+        description: "No se pudo conectar con la base de datos",
+        variant: "destructive",
+      })
+      return
+    }
+
     const { data: userData } = await supabase.auth.getUser()
 
-    const lines = csvText.trim().split("\n")
-    const headers = lines[0].toLowerCase()
+    const lines = csvText.trim().split("\n").filter((line) => line.trim())
+    
+    if (lines.length === 0) {
+      toast({
+        title: "Error",
+        description: "El archivo CSV está vacío",
+        variant: "destructive",
+      })
+      return
+    }
+
+    const headers = lines[0]?.toLowerCase() || ""
 
     if (
+      !headers ||
       !headers.includes("codigo") ||
       !headers.includes("nombre") ||
       !headers.includes("cantidad") ||

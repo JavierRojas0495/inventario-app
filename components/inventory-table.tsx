@@ -35,11 +35,13 @@ export function InventoryTable({ items, onUpdate, onDelete, onMovement, showWare
   const [historyItem, setHistoryItem] = useState<InventoryItem | null>(null)
   const [movementItem, setMovementItem] = useState<InventoryItem | null>(null)
 
-  const filteredItems = items.filter(
-    (item) =>
-      item.codigo.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.nombre.toLowerCase().includes(searchTerm.toLowerCase()),
-  )
+  const filteredItems = items.filter((item) => {
+    if (!item || !searchTerm) return true
+    const searchLower = searchTerm.toLowerCase()
+    const codigo = item.codigo?.toLowerCase() || ""
+    const nombre = item.nombre?.toLowerCase() || ""
+    return codigo.includes(searchLower) || nombre.includes(searchLower)
+  })
 
   const handleEdit = (item: InventoryItem) => {
     setEditingItem(item)

@@ -62,12 +62,24 @@ export function UserManagement() {
 
   const loadUsers = async () => {
     setIsLoading(true)
-    const { data, error } = await supabase.from("users").select("*").order("created_at", { ascending: false })
+    try {
+      const { data, error } = await supabase.from("users").select("*").order("created_at", { ascending: false })
 
-    if (data) {
-      setUsers(data)
+      if (error) {
+        console.error("Error al cargar usuarios:", error)
+        setError("Error al cargar usuarios: " + error.message)
+        return
+      }
+
+      if (data) {
+        setUsers(data)
+      }
+    } catch (err: any) {
+      console.error("Error inesperado al cargar usuarios:", err)
+      setError("Error al cargar usuarios")
+    } finally {
+      setIsLoading(false)
     }
-    setIsLoading(false)
   }
 
   const handleCreateUser = async (e: React.FormEvent) => {
@@ -76,23 +88,26 @@ export function UserManagement() {
     setError(null)
 
     try {
-      // Crear usuario en auth
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            username,
-            full_name: fullName,
-            is_admin: isAdmin,
-          },
-          emailRedirectTo: `${window.location.origin}`,
+      // Usar API route para crear el usuario (evita problemas de CORS)
+      const response = await fetch("/api/create-admin", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
+        body: JSON.stringify({
+          email,
+          password,
+          username,
+          fullName,
+          isAdmin,
+        }),
       })
 
-      if (authError) throw authError
+      const data = await response.json()
 
-      // El trigger automáticamente crea el registro en public.users
+      if (!response.ok) {
+        throw new Error(data.error || "Error al crear el usuario")
+      }
 
       // Limpiar formulario
       setEmail("")
@@ -105,6 +120,7 @@ export function UserManagement() {
       // Recargar usuarios
       setTimeout(() => loadUsers(), 1000)
     } catch (err: any) {
+      console.error("Error al crear usuario:", err)
       setError(err.message || "Error al crear usuario")
     } finally {
       setIsLoading(false)
@@ -112,17 +128,31 @@ export function UserManagement() {
   }
 
   const handleDeleteUser = async (userId: string) => {
-    if (!confirm("¿Estás seguro de eliminar este usuario?")) return
+    if (!confirm("¿Estás seguro de eliminar este usuario? Esta acción no se puede deshacer.")) return
 
     setIsLoading(true)
-    // Nota: Para eliminar usuarios de auth, necesitas usar la API de administración
-    // Por ahora, solo eliminamos de la tabla public.users
-    const { error } = await supabase.from("users").delete().eq("id", userId)
+    setError(null)
 
-    if (!error) {
-      loadUsers()
+    try {
+      // Usar API route para eliminar el usuario (usa Service Role Key)
+      const response = await fetch(`/api/delete-user?userId=${userId}`, {
+        method: "DELETE",
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || "Error al eliminar el usuario")
+      }
+
+      // Recargar usuarios
+      await loadUsers()
+    } catch (err: any) {
+      console.error("Error al eliminar usuario:", err)
+      setError(err.message || "Error al eliminar usuario")
+    } finally {
+      setIsLoading(false)
     }
-    setIsLoading(false)
   }
 
   // Solo admins pueden ver este módulo

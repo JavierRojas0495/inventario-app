@@ -260,7 +260,8 @@ export function importFromCSV(
       return { success: false, count: 0, errors: ["Archivo vacío"] }
     }
 
-    const startIndex = lines[0].toLowerCase().includes("codigo") ? 1 : 0
+    const firstLine = lines[0] || ""
+    const startIndex = firstLine.toLowerCase().includes("codigo") ? 1 : 0
 
     for (let i = startIndex; i < lines.length; i++) {
       const line = lines[i].trim()
