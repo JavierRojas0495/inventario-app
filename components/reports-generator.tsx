@@ -158,19 +158,40 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
           </thead>
           <tbody>
             ${movements
+              .filter((mov) => mov && mov.id)
               .slice(0, 20)
-              .map(
-                (mov) => `
+              .map((mov) => {
+                // Manejar diferentes formatos de fecha
+                const fechaStr = mov.fecha || mov.created_at || new Date().toISOString()
+                let fechaFormateada = "Fecha inválida"
+                
+                try {
+                  const fecha = new Date(fechaStr)
+                  if (!isNaN(fecha.getTime())) {
+                    fechaFormateada = fecha.toLocaleString("es-ES")
+                  }
+                } catch (e) {
+                  console.error("Error al formatear fecha:", e, fechaStr)
+                }
+
+                // Manejar diferentes formatos de campos
+                const itemNombre = mov.itemNombre || mov.description?.split(":")[0] || "Producto desconocido"
+                const tipo = mov.tipo || mov.movement_type || "ajuste"
+                const cantidadAnterior = mov.cantidadAnterior ?? mov.quantity_before ?? 0
+                const cantidadNueva = mov.cantidadNueva ?? mov.quantity_after ?? 0
+                const descripcion = mov.descripcion || mov.description || ""
+
+                return `
               <tr>
-                <td>${new Date(mov.fecha).toLocaleString("es-ES")}</td>
-                <td>${mov.itemNombre}</td>
-                <td>${mov.tipo}</td>
-                <td>${mov.cantidadAnterior}</td>
-                <td>${mov.cantidadNueva}</td>
-                <td>${mov.descripcion}</td>
+                <td>${fechaFormateada}</td>
+                <td>${itemNombre}</td>
+                <td>${tipo}</td>
+                <td>${cantidadAnterior}</td>
+                <td>${cantidadNueva}</td>
+                <td>${descripcion}</td>
               </tr>
-            `,
-              )
+            `
+              })
               .join("")}
           </tbody>
         </table>
@@ -257,18 +278,43 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
     autoTable(doc, {
       startY: finalY + 20,
       head: [["Fecha", "Producto", "Tipo", "Cant. Ant.", "Cant. Nueva"]],
-      body: movements.slice(0, 15).map((mov) => [
-        new Date(mov.fecha).toLocaleString("es-ES", {
-          day: "2-digit",
-          month: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
+      body: movements
+        .filter((mov) => mov && mov.id)
+        .slice(0, 15)
+        .map((mov) => {
+          // Manejar diferentes formatos de fecha
+          const fechaStr = mov.fecha || mov.created_at || new Date().toISOString()
+          let fechaFormateada = "Fecha inválida"
+          
+          try {
+            const fecha = new Date(fechaStr)
+            if (!isNaN(fecha.getTime())) {
+              fechaFormateada = fecha.toLocaleString("es-ES", {
+                day: "2-digit",
+                month: "2-digit",
+                year: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+              })
+            }
+          } catch (e) {
+            console.error("Error al formatear fecha:", e, fechaStr)
+          }
+
+          // Manejar diferentes formatos de campos
+          const itemNombre = mov.itemNombre || mov.description?.split(":")[0] || "Producto desconocido"
+          const tipo = mov.tipo || mov.movement_type || "ajuste"
+          const cantidadAnterior = mov.cantidadAnterior ?? mov.quantity_before ?? 0
+          const cantidadNueva = mov.cantidadNueva ?? mov.quantity_after ?? 0
+
+          return [
+            fechaFormateada,
+            itemNombre,
+            tipo,
+            cantidadAnterior,
+            cantidadNueva,
+          ]
         }),
-        mov.itemNombre,
-        mov.tipo,
-        mov.cantidadAnterior,
-        mov.cantidadNueva,
-      ]),
       theme: "striped",
       headStyles: { fillColor: [74, 144, 226] },
     })

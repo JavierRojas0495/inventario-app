@@ -77,11 +77,23 @@ export default function Home() {
 
   useEffect(() => {
     if (selectedWarehouseId) {
-      loadItems()
-      loadMovements()
+      const loadData = async () => {
+        await loadItems()
+        // Cargar movimientos después de que los items estén cargados
+        await loadMovements()
+      }
+      loadData()
       resetDailyQuantities()
     }
   }, [selectedWarehouseId])
+
+  // Recargar movimientos cuando cambien los items (para actualizar nombres de productos)
+  useEffect(() => {
+    if (items.length > 0 && selectedWarehouseId && movements.length > 0) {
+      // Solo recargar si ya hay movimientos cargados (para evitar loops infinitos)
+      loadMovements()
+    }
+  }, [items.length])
 
   const loadUser = async () => {
     if (!supabase) return
@@ -208,7 +220,54 @@ export default function Home() {
       }
 
       if (data) {
-        setMovements(data)
+        // Mapear movimientos de Supabase al formato esperado por los componentes
+        const formattedMovements = data
+          .filter((mov: any) => mov && mov.id)
+          .map((mov: any) => {
+            // Buscar el item correspondiente para obtener su nombre y código
+            // Usar items del estado actual
+            const item = items.find((i) => i.id === mov.item_id)
+            const itemNombre = item?.nombre || item?.name || "Producto desconocido"
+            const itemCodigo = item?.codigo || item?.code || ""
+
+            // Mapear movement_type a tipo
+            const tipo = mov.movement_type || "ajuste"
+
+            // Asegurar que la fecha sea válida
+            const fechaStr = mov.created_at || mov.fecha || new Date().toISOString()
+            let fechaValida = fechaStr
+            try {
+              const fechaTest = new Date(fechaStr)
+              if (isNaN(fechaTest.getTime())) {
+                fechaValida = new Date().toISOString()
+              }
+            } catch {
+              fechaValida = new Date().toISOString()
+            }
+
+            return {
+              ...mov,
+              // Campos originales de Supabase
+              item_id: mov.item_id,
+              warehouse_id: mov.warehouse_id,
+              movement_type: mov.movement_type,
+              quantity_before: mov.quantity_before ?? 0,
+              quantity_change: mov.quantity_change ?? 0,
+              quantity_after: mov.quantity_after ?? 0,
+              description: mov.description || "",
+              created_at: fechaValida,
+              // Campos mapeados para compatibilidad con componentes
+              fecha: fechaValida,
+              tipo: tipo as "entrada" | "salida" | "ajuste" | "creacion" | "edicion",
+              cantidadAnterior: mov.quantity_before ?? 0,
+              cantidadNueva: mov.quantity_after ?? 0,
+              diferencia: mov.quantity_change ?? 0,
+              itemNombre,
+              itemCodigo,
+              itemId: mov.item_id,
+            }
+          })
+        setMovements(formattedMovements)
       }
     } catch (err: any) {
       console.error("Error inesperado al cargar movimientos:", err)
@@ -488,7 +547,8 @@ export default function Home() {
       ])
 
       await loadItems()
-      await loadMovements()
+      // Esperar un poco para que loadItems termine antes de cargar movimientos
+      setTimeout(() => loadMovements(), 100)
 
       toast({
         title: tipo === "entrada" ? "Entrada registrada" : "Salida registrada",
