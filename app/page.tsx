@@ -599,18 +599,29 @@ export default function Home() {
       return
     }
 
-    const headers = lines[0]?.toLowerCase() || ""
+    const headers = lines[0] || ""
+    const headersLower = headers.toLowerCase()
+    
+    // Normalizar acentos para la comparación
+    const normalizeText = (text: string) => {
+      return text
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "") // Eliminar diacríticos
+    }
+
+    const normalizedHeaders = normalizeText(headers)
 
     if (
       !headers ||
-      !headers.includes("codigo") ||
-      !headers.includes("nombre") ||
-      !headers.includes("cantidad") ||
-      !headers.includes("precio")
+      (!normalizedHeaders.includes("codigo") && !normalizedHeaders.includes("code")) ||
+      !normalizedHeaders.includes("nombre") ||
+      (!normalizedHeaders.includes("cantidad") && !normalizedHeaders.includes("quantity") && !normalizedHeaders.includes("disponible")) ||
+      (!normalizedHeaders.includes("precio") && !normalizedHeaders.includes("price"))
     ) {
       toast({
         title: "Error en el formato",
-        description: "El archivo CSV debe tener las columnas: Codigo, Nombre, Cantidad, Precio",
+        description: "El archivo CSV debe tener las columnas: Código/Codigo, Nombre, Cantidad, Precio",
         variant: "destructive",
       })
       return
@@ -665,7 +676,8 @@ export default function Home() {
       let precioStr = ""
 
       // Determinar qué columnas usar según los headers
-      const headerArray = headers.split(",").map(h => h.trim().toLowerCase())
+      // Usar la misma función de normalización para manejar acentos
+      const headerArray = headers.split(",").map(h => normalizeText(h.trim()))
       
       if (values.length === 4 && headerArray.length === 4) {
         // Formato simple: Código, Nombre, Cantidad, Precio
@@ -673,10 +685,10 @@ export default function Home() {
         precioStr = values[3] || ""
       } else {
         // Formato con más columnas, buscar las correctas
-        const codigoIndex = headerArray.findIndex(h => h.includes("codigo") || h.includes("código"))
-        const nombreIndex = headerArray.findIndex(h => h.includes("nombre"))
-        const cantidadIndex = headerArray.findIndex(h => h.includes("cantidad") || h.includes("disponible"))
-        const precioIndex = headerArray.findIndex(h => h.includes("precio") && !h.includes("total"))
+        const codigoIndex = headerArray.findIndex(h => h.includes("codigo") || h.includes("code"))
+        const nombreIndex = headerArray.findIndex(h => h.includes("nombre") || h.includes("name"))
+        const cantidadIndex = headerArray.findIndex(h => h.includes("cantidad") || h.includes("quantity") || h.includes("disponible") || h.includes("available"))
+        const precioIndex = headerArray.findIndex(h => (h.includes("precio") || h.includes("price")) && !h.includes("total") && !h.includes("valor"))
 
         if (codigoIndex >= 0) codigo = values[codigoIndex] || ""
         if (nombreIndex >= 0) nombre = values[nombreIndex] || ""
