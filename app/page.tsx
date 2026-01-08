@@ -89,11 +89,14 @@ export default function Home() {
 
   // Recargar movimientos cuando cambien los items (para actualizar nombres de productos)
   useEffect(() => {
-    if (items.length > 0 && selectedWarehouseId && movements.length > 0) {
-      // Solo recargar si ya hay movimientos cargados (para evitar loops infinitos)
-      loadMovements()
+    if (items.length > 0 && selectedWarehouseId) {
+      // Recargar movimientos para actualizar nombres de productos
+      const timer = setTimeout(() => {
+        loadMovements()
+      }, 500) // Esperar un poco para evitar múltiples llamadas
+      return () => clearTimeout(timer)
     }
-  }, [items.length])
+  }, [items.length, selectedWarehouseId])
 
   const loadUser = async () => {
     if (!supabase) return

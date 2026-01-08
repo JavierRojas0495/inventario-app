@@ -14,19 +14,25 @@ interface ReportsGeneratorProps {
 
 export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
   const generateCSV = () => {
-    const headers = [
-      "Código",
-      "Nombre",
-      "Inicial",
-      "Usado Hoy",
-      "Disponible",
-      "Precio",
-      "Valor Total",
-      "Fecha Actualización",
-    ]
-    const rows = items
-      .filter((item) => item && item.id) // Filtrar items inválidos
-      .map((item) => {
+    try {
+      if (!items || items.length === 0) {
+        alert("No hay productos para exportar")
+        return
+      }
+
+      const headers = [
+        "Código",
+        "Nombre",
+        "Inicial",
+        "Usado Hoy",
+        "Disponible",
+        "Precio",
+        "Valor Total",
+        "Fecha Actualización",
+      ]
+      const rows = items
+        .filter((item) => item && item.id) // Filtrar items inválidos
+        .map((item) => {
         const codigo = item.codigo || item.code || ""
         const nombre = item.nombre || item.name || ""
         const cantidadInicial = item.cantidadInicial ?? item.quantity_initial_today ?? 0
@@ -34,6 +40,17 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
         const cantidadDisponible = item.cantidadDisponible ?? item.quantity_available ?? 0
         const precio = item.precio ?? item.price ?? 0
         const fechaActualizacion = item.fechaActualizacion || item.updated_at || item.created_at || new Date().toISOString()
+
+        // Validar y formatear fecha
+        let fechaFormateada = "Fecha inválida"
+        try {
+          const fecha = new Date(fechaActualizacion)
+          if (!isNaN(fecha.getTime())) {
+            fechaFormateada = fecha.toLocaleString("es-ES")
+          }
+        } catch (e) {
+          console.error("Error al formatear fecha en CSV:", e, fechaActualizacion)
+        }
 
         return [
           codigo,
@@ -43,21 +60,31 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
           cantidadDisponible.toString(),
           precio.toFixed(2),
           (cantidadDisponible * precio).toFixed(2),
-          new Date(fechaActualizacion).toLocaleString("es-ES"),
+          fechaFormateada,
         ]
       })
 
-    const csvContent = [headers.join(","), ...rows.map((row) => row.map((cell) => `"${cell}"`).join(","))].join("\n")
+      const csvContent = [headers.join(","), ...rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))].join("\n")
 
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" })
-    const link = document.createElement("a")
-    link.href = URL.createObjectURL(blob)
-    link.download = `inventario_${new Date().toISOString().split("T")[0]}.csv`
-    link.click()
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" })
+      const link = document.createElement("a")
+      link.href = URL.createObjectURL(blob)
+      link.download = `inventario_${new Date().toISOString().split("T")[0]}.csv`
+      link.click()
+    } catch (error) {
+      console.error("Error al generar CSV:", error)
+      alert("Error al generar el archivo CSV. Por favor, intenta nuevamente.")
+    }
   }
 
   const generateWord = () => {
-    const totalValor = items.reduce((sum, item) => {
+    try {
+      if (!items || items.length === 0) {
+        alert("No hay productos para exportar")
+        return
+      }
+
+      const totalValor = items.reduce((sum, item) => {
       const qty = item.cantidadDisponible ?? item.quantity_available ?? 0
       const price = item.precio ?? item.price ?? 0
       return sum + (typeof qty === 'number' && typeof price === 'number' ? qty * price : 0)
@@ -126,6 +153,17 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
                 const cantidadDisponible = item.cantidadDisponible ?? item.quantity_available ?? 0
                 const precio = item.precio ?? item.price ?? 0
                 const fechaActualizacion = item.fechaActualizacion || item.updated_at || item.created_at || new Date().toISOString()
+                
+                // Validar y formatear fecha
+                let fechaFormateada = "Fecha inválida"
+                try {
+                  const fecha = new Date(fechaActualizacion)
+                  if (!isNaN(fecha.getTime())) {
+                    fechaFormateada = fecha.toLocaleString("es-ES")
+                  }
+                } catch (e) {
+                  console.error("Error al formatear fecha en Word:", e, fechaActualizacion)
+                }
 
                 return `
               <tr>
@@ -136,7 +174,7 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
                 <td>${cantidadDisponible}</td>
                 <td>$${precio.toFixed(2)}</td>
                 <td>$${(cantidadDisponible * precio).toFixed(2)}</td>
-                <td>${new Date(fechaActualizacion).toLocaleString("es-ES")}</td>
+                <td>${fechaFormateada}</td>
               </tr>
             `
               })
@@ -175,20 +213,31 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
                 }
 
                 // Manejar diferentes formatos de campos
-                const itemNombre = mov.itemNombre || mov.description?.split(":")[0] || "Producto desconocido"
+                const itemNombre = mov.itemNombre || mov.description?.split(":")[0] || mov.description || "Producto desconocido"
                 const tipo = mov.tipo || mov.movement_type || "ajuste"
                 const cantidadAnterior = mov.cantidadAnterior ?? mov.quantity_before ?? 0
                 const cantidadNueva = mov.cantidadNueva ?? mov.quantity_after ?? 0
                 const descripcion = mov.descripcion || mov.description || ""
 
+                // Función para escapar HTML
+                const escapeHtml = (text: string) => {
+                  if (!text) return ""
+                  return String(text)
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/"/g, "&quot;")
+                    .replace(/'/g, "&#039;")
+                }
+
                 return `
               <tr>
-                <td>${fechaFormateada}</td>
-                <td>${itemNombre}</td>
-                <td>${tipo}</td>
+                <td>${escapeHtml(fechaFormateada)}</td>
+                <td>${escapeHtml(itemNombre)}</td>
+                <td>${escapeHtml(tipo)}</td>
                 <td>${cantidadAnterior}</td>
                 <td>${cantidadNueva}</td>
-                <td>${descripcion}</td>
+                <td>${escapeHtml(descripcion)}</td>
               </tr>
             `
               })
@@ -203,16 +252,26 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
       </html>
     `
 
-    const blob = new Blob([htmlContent], { type: "application/msword" })
-    const link = document.createElement("a")
-    link.href = URL.createObjectURL(blob)
-    link.download = `informe_inventario_${new Date().toISOString().split("T")[0]}.doc`
-    link.click()
+      const blob = new Blob([htmlContent], { type: "application/msword" })
+      const link = document.createElement("a")
+      link.href = URL.createObjectURL(blob)
+      link.download = `informe_inventario_${new Date().toISOString().split("T")[0]}.doc`
+      link.click()
+    } catch (error) {
+      console.error("Error al generar Word:", error)
+      alert("Error al generar el archivo Word. Por favor, intenta nuevamente.")
+    }
   }
 
   const generatePDF = () => {
-    const doc = new jsPDF()
-    const totalValor = items.reduce((sum, item) => {
+    try {
+      if (!items || items.length === 0) {
+        alert("No hay productos para exportar")
+        return
+      }
+
+      const doc = new jsPDF()
+      const totalValor = items.reduce((sum, item) => {
       const qty = item.cantidadDisponible ?? item.quantity_available ?? 0
       const price = item.precio ?? item.price ?? 0
       return sum + (typeof qty === 'number' && typeof price === 'number' ? qty * price : 0)
@@ -278,7 +337,7 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
     autoTable(doc, {
       startY: finalY + 20,
       head: [["Fecha", "Producto", "Tipo", "Cant. Ant.", "Cant. Nueva"]],
-      body: movements
+      body: (movements || [])
         .filter((mov) => mov && mov.id)
         .slice(0, 15)
         .map((mov) => {
@@ -319,7 +378,11 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
       headStyles: { fillColor: [74, 144, 226] },
     })
 
-    doc.save(`informe_inventario_${new Date().toISOString().split("T")[0]}.pdf`)
+      doc.save(`informe_inventario_${new Date().toISOString().split("T")[0]}.pdf`)
+    } catch (error) {
+      console.error("Error al generar PDF:", error)
+      alert("Error al generar el archivo PDF. Por favor, intenta nuevamente.")
+    }
   }
 
   return (
