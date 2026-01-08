@@ -115,9 +115,10 @@ export default function Home() {
   }
 
   const loadItems = async () => {
-    if (!selectedWarehouseId) return
+    if (!selectedWarehouseId || !supabase) return
 
-    let query = supabase.from("inventory_items").select(`
+    try {
+      let query = supabase.from("inventory_items").select(`
         *,
         warehouses:warehouse_id (
           name
@@ -130,22 +131,63 @@ export default function Home() {
 
     const { data, error } = await query.order("name")
 
-      if (data) {
-        const formattedItems = data.map((item: any) => ({
-          ...item,
-          warehouse_name: item.warehouses?.name || "",
-          // Mapear campos de Supabase a formato esperado por componentes
-          codigo: item.code || item.codigo || "",
-          nombre: item.name || item.nombre || "",
-          cantidadDisponible: item.quantity_available || item.cantidadDisponible || 0,
-          cantidadInicial: item.quantity_initial_today || item.cantidadInicial || 0,
-          cantidadUsada: item.quantity_used_today || item.cantidadUsada || 0,
-          precio: item.price || item.precio || 0,
-          fechaActualizacion: item.updated_at || item.fechaActualizacion || item.created_at || new Date().toISOString(),
-          warehouseId: item.warehouse_id || item.warehouseId || "",
-        }))
-        setItems(formattedItems)
-      }
+    if (error) {
+      console.error("Error al cargar items:", error)
+      toast({
+        title: "Error",
+        description: "No se pudieron cargar los productos. Por favor, intenta nuevamente.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (data) {
+      const formattedItems = data
+        .filter((item: any) => item && item.id) // Filtrar items inválidos
+        .map((item: any) => {
+          // Asegurar que todos los campos requeridos existan
+          const codigo = item.code || item.codigo || ""
+          const nombre = item.name || item.nombre || ""
+          const cantidadDisponible = Number(item.quantity_available ?? item.cantidadDisponible ?? 0)
+          const cantidadInicial = Number(item.quantity_initial_today ?? item.cantidadInicial ?? 0)
+          const cantidadUsada = Number(item.quantity_used_today ?? item.cantidadUsada ?? 0)
+          const precio = Number(item.price ?? item.precio ?? 0)
+          const fechaActualizacion = item.updated_at || item.fechaActualizacion || item.created_at || new Date().toISOString()
+          const warehouseId = item.warehouse_id || item.warehouseId || ""
+
+          return {
+            ...item,
+            warehouse_name: item.warehouses?.name || "",
+            // Mapear campos de Supabase a formato esperado por componentes
+            codigo,
+            nombre,
+            cantidadDisponible,
+            cantidadInicial,
+            cantidadUsada,
+            precio,
+            fechaActualizacion,
+            warehouseId,
+            // Mantener campos originales de Supabase también
+            code: codigo,
+            name: nombre,
+            quantity_available: cantidadDisponible,
+            quantity_initial_today: cantidadInicial,
+            quantity_used_today: cantidadUsada,
+            price: precio,
+            updated_at: fechaActualizacion,
+            warehouse_id: warehouseId,
+          }
+        })
+      setItems(formattedItems)
+    }
+    } catch (err: any) {
+      console.error("Error inesperado al cargar items:", err)
+      toast({
+        title: "Error",
+        description: "Error al cargar los productos. Por favor, intenta nuevamente.",
+        variant: "destructive",
+      })
+    }
   }
 
   const loadMovements = async () => {
@@ -359,67 +401,107 @@ export default function Home() {
   }
 
   const handleMovement = async (id: string, cantidad: number, tipo: "entrada" | "salida") => {
-    const item = items.find((i) => i.id === id)
-    if (!item) return
-
-    const { data: userData } = await supabase.auth.getUser()
-
-    let newQuantity = item.quantity_available
-    let newUsedToday = item.quantity_used_today
-
-    if (tipo === "entrada") {
-      newQuantity += cantidad
-    } else {
-      if (cantidad > item.quantity_available) {
+    try {
+      if (!supabase) {
         toast({
           title: "Error",
-          description: "No hay suficiente stock disponible",
+          description: "No se pudo conectar con la base de datos",
           variant: "destructive",
         })
         return
       }
-      newQuantity -= cantidad
-      newUsedToday += cantidad
-    }
 
-    const { error } = await supabase
-      .from("inventory_items")
-      .update({
-        quantity_available: newQuantity,
-        quantity_used_today: newUsedToday,
-      })
-      .eq("id", id)
+      const item = items.find((i) => i.id === id)
+      if (!item) {
+        toast({
+          title: "Error",
+          description: "Producto no encontrado",
+          variant: "destructive",
+        })
+        return
+      }
 
-    if (error) {
+      const { data: userData } = await supabase.auth.getUser()
+
+      if (!userData.user) {
+        toast({
+          title: "Error de autenticación",
+          description: "No se pudo verificar tu sesión. Por favor, inicia sesión nuevamente.",
+          variant: "destructive",
+        })
+        return
+      }
+
+      // Asegurar que los campos existan
+      const currentQuantity = item.quantity_available ?? item.cantidadDisponible ?? 0
+      const quantityUsedToday = item.quantity_used_today ?? item.cantidadUsada ?? 0
+      const warehouseId = item.warehouse_id || item.warehouseId || ""
+      const itemName = item.name || item.nombre || "Producto"
+
+      let newQuantity = currentQuantity
+      let newUsedToday = quantityUsedToday
+
+      if (tipo === "entrada") {
+        newQuantity += cantidad
+      } else {
+        if (cantidad > currentQuantity) {
+          toast({
+            title: "Error",
+            description: "No hay suficiente stock disponible",
+            variant: "destructive",
+          })
+          return
+        }
+        newQuantity -= cantidad
+        newUsedToday += cantidad
+      }
+
+      const { error } = await supabase
+        .from("inventory_items")
+        .update({
+          quantity_available: newQuantity,
+          quantity_used_today: newUsedToday,
+        })
+        .eq("id", id)
+
+      if (error) {
+        toast({
+          title: "Error",
+          description: error.message || "No se pudo actualizar la cantidad. Por favor, intenta nuevamente.",
+          variant: "destructive",
+        })
+        return
+      }
+
+      // Registrar movimiento
+      await supabase.from("inventory_movements").insert([
+        {
+          item_id: id,
+          warehouse_id: warehouseId,
+          movement_type: tipo,
+          quantity_before: currentQuantity,
+          quantity_change: tipo === "entrada" ? cantidad : -cantidad,
+          quantity_after: newQuantity,
+          description: `${tipo === "entrada" ? "Entrada" : "Salida"} de ${cantidad} unidades`,
+          created_by: userData.user?.id,
+        },
+      ])
+
+      await loadItems()
+      await loadMovements()
+
       toast({
-        title: "Error",
-        description: error.message,
+        title: tipo === "entrada" ? "Entrada registrada" : "Salida registrada",
+        description: `${cantidad} unidades de ${itemName} ${tipo === "entrada" ? "agregadas" : "retiradas"}`,
+      })
+    } catch (error: any) {
+      console.error("Error inesperado al registrar movimiento:", error)
+      toast({
+        title: "Error inesperado",
+        description: error.message || "Ocurrió un error inesperado. Por favor, intenta nuevamente.",
         variant: "destructive",
       })
-      return
     }
-
-    // Registrar movimiento
-    await supabase.from("inventory_movements").insert([
-      {
-        item_id: id,
-        warehouse_id: item.warehouse_id,
-        movement_type: tipo,
-        quantity_before: item.quantity_available,
-        quantity_change: tipo === "entrada" ? cantidad : -cantidad,
-        quantity_after: newQuantity,
-        description: `${tipo === "entrada" ? "Entrada" : "Salida"} de ${cantidad} unidades`,
-        created_by: userData.user?.id,
-      },
-    ])
-
-    await loadItems()
-    await loadMovements()
-
-    toast({
-      title: tipo === "entrada" ? "Entrada registrada" : "Salida registrada",
-      description: `${cantidad} unidades de ${item.name} ${tipo === "entrada" ? "agregadas" : "retiradas"}`,
-    })
   }
 
   const handleImport = async (csvText: string) => {
@@ -550,9 +632,19 @@ export default function Home() {
   }
 
   const totalProductos = items.length
-  const totalUnidades = items.reduce((sum, item) => sum + item.quantity_available, 0)
-  const totalUsado = items.reduce((sum, item) => sum + item.quantity_used_today, 0)
-  const valorTotal = items.reduce((sum, item) => sum + item.quantity_available * item.price, 0)
+  const totalUnidades = items.reduce((sum, item) => {
+    const qty = item.quantity_available ?? item.cantidadDisponible ?? 0
+    return sum + (typeof qty === 'number' ? qty : 0)
+  }, 0)
+  const totalUsado = items.reduce((sum, item) => {
+    const used = item.quantity_used_today ?? item.cantidadUsada ?? 0
+    return sum + (typeof used === 'number' ? used : 0)
+  }, 0)
+  const valorTotal = items.reduce((sum, item) => {
+    const qty = item.quantity_available ?? item.cantidadDisponible ?? 0
+    const price = item.price ?? item.precio ?? 0
+    return sum + (typeof qty === 'number' && typeof price === 'number' ? qty * price : 0)
+  }, 0)
 
   return (
     <div className="min-h-screen bg-background">

@@ -46,10 +46,10 @@ export function InventoryTable({ items, onUpdate, onDelete, onMovement, showWare
   const handleEdit = (item: InventoryItem) => {
     setEditingItem(item)
     setEditForm({
-      codigo: item.codigo,
-      nombre: item.nombre,
-      cantidadDisponible: item.cantidadDisponible,
-      precio: item.precio,
+      codigo: item.codigo || item.code || "",
+      nombre: item.nombre || item.name || "",
+      cantidadDisponible: item.cantidadDisponible ?? item.quantity_available ?? 0,
+      precio: item.precio ?? item.price ?? 0,
     })
   }
 
@@ -98,27 +98,36 @@ export function InventoryTable({ items, onUpdate, onDelete, onMovement, showWare
               filteredItems.map((item) => {
                 const warehouse = showWarehouse ? getWarehouses().find((w) => w.id === item.warehouseId) : null
 
+                // Asegurar que todos los campos existan
+                const codigo = item.codigo || item.code || ""
+                const nombre = item.nombre || item.name || ""
+                const cantidadInicial = item.cantidadInicial ?? item.quantity_initial_today ?? 0
+                const cantidadUsada = item.cantidadUsada ?? item.quantity_used_today ?? 0
+                const cantidadDisponible = item.cantidadDisponible ?? item.quantity_available ?? 0
+                const precio = item.precio ?? item.price ?? 0
+                const fechaActualizacion = item.fechaActualizacion || item.updated_at || item.created_at || new Date().toISOString()
+
                 return (
                   <TableRow key={item.id}>
-                    <TableCell className="font-medium">{item.codigo}</TableCell>
-                    <TableCell>{item.nombre}</TableCell>
+                    <TableCell className="font-medium">{codigo}</TableCell>
+                    <TableCell>{nombre}</TableCell>
                     {showWarehouse && (
                       <TableCell>
                         <Badge variant="outline">{warehouse?.nombre || "Sin bodega"}</Badge>
                       </TableCell>
                     )}
-                    <TableCell className="text-right text-muted-foreground">{item.cantidadInicial}</TableCell>
-                    <TableCell className="text-right text-destructive font-medium">{item.cantidadUsada}</TableCell>
-                    <TableCell className="text-right font-semibold">{item.cantidadDisponible}</TableCell>
-                    <TableCell className="text-right">${item.precio.toFixed(2)}</TableCell>
+                    <TableCell className="text-right text-muted-foreground">{cantidadInicial}</TableCell>
+                    <TableCell className="text-right text-destructive font-medium">{cantidadUsada}</TableCell>
+                    <TableCell className="text-right font-semibold">{cantidadDisponible}</TableCell>
+                    <TableCell className="text-right">${typeof precio === 'number' ? precio.toFixed(2) : '0.00'}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">
-                      {new Date(item.fechaActualizacion).toLocaleString("es-ES", {
+                      {fechaActualizacion ? new Date(fechaActualizacion).toLocaleString("es-ES", {
                         day: "2-digit",
                         month: "2-digit",
                         year: "numeric",
                         hour: "2-digit",
                         minute: "2-digit",
-                      })}
+                      }) : 'N/A'}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">

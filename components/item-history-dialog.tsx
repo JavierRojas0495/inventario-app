@@ -53,7 +53,12 @@ export function ItemHistoryDialog({ item, onClose }: ItemHistoryDialogProps) {
         <DialogHeader>
           <DialogTitle>Historial de Movimientos</DialogTitle>
           <DialogDescription>
-            {item && `${item.nombre} (${item.codigo}) - Stock actual: ${item.cantidad} unidades`}
+            {item && (() => {
+              const nombre = item.nombre || item.name || ""
+              const codigo = item.codigo || item.code || ""
+              const cantidad = item.cantidadDisponible ?? item.quantity_available ?? item.cantidad ?? 0
+              return `${nombre} (${codigo}) - Stock actual: ${cantidad} unidades`
+            })()}
           </DialogDescription>
         </DialogHeader>
         <div className="mt-4">

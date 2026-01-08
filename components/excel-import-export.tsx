@@ -29,7 +29,15 @@ export function ExcelImportExport({ items, onImport }: ExcelImportExportProps) {
     }
 
     const headers = ["Código", "Nombre", "Cantidad", "Precio"]
-    const rows = items.map((item) => [item.codigo, item.nombre, item.cantidad.toString(), item.precio.toString()])
+    const rows = items
+      .filter((item) => item && item.id)
+      .map((item) => {
+        const codigo = item.codigo || item.code || ""
+        const nombre = item.nombre || item.name || ""
+        const cantidad = item.cantidadDisponible ?? item.quantity_available ?? item.cantidad ?? 0
+        const precio = item.precio ?? item.price ?? 0
+        return [codigo, nombre, cantidad.toString(), precio.toString()]
+      })
 
     const csvContent = [headers.join(","), ...rows.map((row) => row.map((cell) => `"${cell}"`).join(","))].join("\n")
 

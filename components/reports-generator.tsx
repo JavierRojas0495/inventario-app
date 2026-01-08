@@ -24,16 +24,28 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
       "Valor Total",
       "Fecha Actualización",
     ]
-    const rows = items.map((item) => [
-      item.codigo,
-      item.nombre,
-      item.cantidadInicial.toString(),
-      item.cantidadUsada.toString(),
-      item.cantidadDisponible.toString(),
-      item.precio.toFixed(2),
-      (item.cantidadDisponible * item.precio).toFixed(2),
-      new Date(item.fechaActualizacion).toLocaleString("es-ES"),
-    ])
+    const rows = items
+      .filter((item) => item && item.id) // Filtrar items inválidos
+      .map((item) => {
+        const codigo = item.codigo || item.code || ""
+        const nombre = item.nombre || item.name || ""
+        const cantidadInicial = item.cantidadInicial ?? item.quantity_initial_today ?? 0
+        const cantidadUsada = item.cantidadUsada ?? item.quantity_used_today ?? 0
+        const cantidadDisponible = item.cantidadDisponible ?? item.quantity_available ?? 0
+        const precio = item.precio ?? item.price ?? 0
+        const fechaActualizacion = item.fechaActualizacion || item.updated_at || item.created_at || new Date().toISOString()
+
+        return [
+          codigo,
+          nombre,
+          cantidadInicial.toString(),
+          cantidadUsada.toString(),
+          cantidadDisponible.toString(),
+          precio.toFixed(2),
+          (cantidadDisponible * precio).toFixed(2),
+          new Date(fechaActualizacion).toLocaleString("es-ES"),
+        ]
+      })
 
     const csvContent = [headers.join(","), ...rows.map((row) => row.map((cell) => `"${cell}"`).join(","))].join("\n")
 
@@ -45,9 +57,19 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
   }
 
   const generateWord = () => {
-    const totalValor = items.reduce((sum, item) => sum + item.cantidadDisponible * item.precio, 0)
-    const totalUnidades = items.reduce((sum, item) => sum + item.cantidadDisponible, 0)
-    const totalUsado = items.reduce((sum, item) => sum + item.cantidadUsada, 0)
+    const totalValor = items.reduce((sum, item) => {
+      const qty = item.cantidadDisponible ?? item.quantity_available ?? 0
+      const price = item.precio ?? item.price ?? 0
+      return sum + (typeof qty === 'number' && typeof price === 'number' ? qty * price : 0)
+    }, 0)
+    const totalUnidades = items.reduce((sum, item) => {
+      const qty = item.cantidadDisponible ?? item.quantity_available ?? 0
+      return sum + (typeof qty === 'number' ? qty : 0)
+    }, 0)
+    const totalUsado = items.reduce((sum, item) => {
+      const used = item.cantidadUsada ?? item.quantity_used_today ?? 0
+      return sum + (typeof used === 'number' ? used : 0)
+    }, 0)
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -95,20 +117,29 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
           </thead>
           <tbody>
             ${items
-              .map(
-                (item) => `
+              .filter((item) => item && item.id)
+              .map((item) => {
+                const codigo = item.codigo || item.code || ""
+                const nombre = item.nombre || item.name || ""
+                const cantidadInicial = item.cantidadInicial ?? item.quantity_initial_today ?? 0
+                const cantidadUsada = item.cantidadUsada ?? item.quantity_used_today ?? 0
+                const cantidadDisponible = item.cantidadDisponible ?? item.quantity_available ?? 0
+                const precio = item.precio ?? item.price ?? 0
+                const fechaActualizacion = item.fechaActualizacion || item.updated_at || item.created_at || new Date().toISOString()
+
+                return `
               <tr>
-                <td>${item.codigo}</td>
-                <td>${item.nombre}</td>
-                <td>${item.cantidadInicial}</td>
-                <td>${item.cantidadUsada}</td>
-                <td>${item.cantidadDisponible}</td>
-                <td>$${item.precio.toFixed(2)}</td>
-                <td>$${(item.cantidadDisponible * item.precio).toFixed(2)}</td>
-                <td>${new Date(item.fechaActualizacion).toLocaleString("es-ES")}</td>
+                <td>${codigo}</td>
+                <td>${nombre}</td>
+                <td>${cantidadInicial}</td>
+                <td>${cantidadUsada}</td>
+                <td>${cantidadDisponible}</td>
+                <td>$${precio.toFixed(2)}</td>
+                <td>$${(cantidadDisponible * precio).toFixed(2)}</td>
+                <td>${new Date(fechaActualizacion).toLocaleString("es-ES")}</td>
               </tr>
-            `,
-              )
+            `
+              })
               .join("")}
           </tbody>
         </table>
@@ -160,9 +191,19 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
 
   const generatePDF = () => {
     const doc = new jsPDF()
-    const totalValor = items.reduce((sum, item) => sum + item.cantidadDisponible * item.precio, 0)
-    const totalUnidades = items.reduce((sum, item) => sum + item.cantidadDisponible, 0)
-    const totalUsado = items.reduce((sum, item) => sum + item.cantidadUsada, 0)
+    const totalValor = items.reduce((sum, item) => {
+      const qty = item.cantidadDisponible ?? item.quantity_available ?? 0
+      const price = item.precio ?? item.price ?? 0
+      return sum + (typeof qty === 'number' && typeof price === 'number' ? qty * price : 0)
+    }, 0)
+    const totalUnidades = items.reduce((sum, item) => {
+      const qty = item.cantidadDisponible ?? item.quantity_available ?? 0
+      return sum + (typeof qty === 'number' ? qty : 0)
+    }, 0)
+    const totalUsado = items.reduce((sum, item) => {
+      const used = item.cantidadUsada ?? item.quantity_used_today ?? 0
+      return sum + (typeof used === 'number' ? used : 0)
+    }, 0)
 
     // Título
     doc.setFontSize(20)
@@ -185,14 +226,25 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
     autoTable(doc, {
       startY: 85,
       head: [["Código", "Nombre", "Inicial", "Usado", "Disponible", "Precio"]],
-      body: items.map((item) => [
-        item.codigo,
-        item.nombre,
-        item.cantidadInicial,
-        item.cantidadUsada,
-        item.cantidadDisponible,
-        `$${item.precio.toFixed(2)}`,
-      ]),
+      body: items
+        .filter((item) => item && item.id)
+        .map((item) => {
+          const codigo = item.codigo || item.code || ""
+          const nombre = item.nombre || item.name || ""
+          const cantidadInicial = item.cantidadInicial ?? item.quantity_initial_today ?? 0
+          const cantidadUsada = item.cantidadUsada ?? item.quantity_used_today ?? 0
+          const cantidadDisponible = item.cantidadDisponible ?? item.quantity_available ?? 0
+          const precio = item.precio ?? item.price ?? 0
+
+          return [
+            codigo,
+            nombre,
+            cantidadInicial,
+            cantidadUsada,
+            cantidadDisponible,
+            `$${precio.toFixed(2)}`,
+          ]
+        }),
       theme: "striped",
       headStyles: { fillColor: [74, 144, 226] },
     })

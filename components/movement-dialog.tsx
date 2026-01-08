@@ -36,13 +36,17 @@ export function MovementDialog({ item, onClose, onMovement }: MovementDialogProp
 
   if (!item) return null
 
+  // Asegurar que los campos existan
+  const nombre = item.nombre || item.name || ""
+  const cantidadDisponible = item.cantidadDisponible ?? item.quantity_available ?? 0
+
   return (
     <Dialog open={item !== null} onOpenChange={onClose}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Registrar Movimiento</DialogTitle>
           <DialogDescription>
-            {item.nombre} - Disponible: {item.cantidadDisponible} unidades
+            {nombre} - Disponible: {cantidadDisponible} unidades
           </DialogDescription>
         </DialogHeader>
 
@@ -70,7 +74,7 @@ export function MovementDialog({ item, onClose, onMovement }: MovementDialogProp
                 placeholder="Ingrese cantidad"
               />
               <p className="text-sm text-muted-foreground">
-                Nueva disponible: {item.cantidadDisponible + cantidad} unidades
+                Nueva disponible: {cantidadDisponible + cantidad} unidades
               </p>
             </div>
           </TabsContent>
@@ -82,15 +86,15 @@ export function MovementDialog({ item, onClose, onMovement }: MovementDialogProp
                 id="cantidad-salida"
                 type="number"
                 min="1"
-                max={item.cantidadDisponible}
+                max={cantidadDisponible}
                 value={cantidad}
                 onChange={(e) => setCantidad(Number.parseInt(e.target.value) || 1)}
                 placeholder="Ingrese cantidad"
               />
               <p className="text-sm text-muted-foreground">
-                Nueva disponible: {Math.max(0, item.cantidadDisponible - cantidad)} unidades
+                Nueva disponible: {Math.max(0, cantidadDisponible - cantidad)} unidades
               </p>
-              {cantidad > item.cantidadDisponible && (
+              {cantidad > cantidadDisponible && (
                 <p className="text-sm text-destructive">La cantidad excede el stock disponible</p>
               )}
             </div>
@@ -103,7 +107,7 @@ export function MovementDialog({ item, onClose, onMovement }: MovementDialogProp
           </Button>
           <Button
             onClick={handleSubmit}
-            disabled={cantidad <= 0 || (tipo === "salida" && cantidad > item.cantidadDisponible)}
+            disabled={cantidad <= 0 || (tipo === "salida" && cantidad > cantidadDisponible)}
           >
             Registrar {tipo === "entrada" ? "Entrada" : "Salida"}
           </Button>
