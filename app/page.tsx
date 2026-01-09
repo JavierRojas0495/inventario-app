@@ -300,7 +300,13 @@ export default function Home() {
   }
 
   const handleAddItem = async (
-    itemData: { codigo: string; nombre: string; cantidad: number; precio: number },
+    itemData: {
+      codigo: string
+      nombre: string
+      cantidad: number
+      precio: number
+      fechaIngreso?: string
+    },
     warehouseId?: string,
   ) => {
     try {
@@ -326,18 +332,58 @@ export default function Home() {
         return
       }
 
+      // Validar que el código no exista en la misma bodega
+      const { data: existingCode } = await supabase
+        .from("inventory_items")
+        .select("id, code, name")
+        .eq("warehouse_id", targetWarehouseId)
+        .eq("code", itemData.codigo.trim())
+        .maybeSingle()
+
+      if (existingCode) {
+        toast({
+          title: "Código duplicado",
+          description: `Ya existe un producto con el código "${itemData.codigo}" en esta bodega. Por favor, usa un código diferente.`,
+          variant: "destructive",
+        })
+        return
+      }
+
+      // Validar que el nombre no exista en la misma bodega
+      const { data: existingName } = await supabase
+        .from("inventory_items")
+        .select("id, code, name")
+        .eq("warehouse_id", targetWarehouseId)
+        .ilike("name", itemData.nombre.trim())
+        .maybeSingle()
+
+      if (existingName) {
+        toast({
+          title: "Nombre duplicado",
+          description: `Ya existe un producto con el nombre "${itemData.nombre}" en esta bodega. Por favor, usa un nombre diferente.`,
+          variant: "destructive",
+        })
+        return
+      }
+
+      // Si hay fecha de ingreso, convertirla a formato ISO para created_at
+      const createdAt = itemData.fechaIngreso
+        ? new Date(itemData.fechaIngreso + "T00:00:00").toISOString()
+        : undefined
+
       const { data, error } = await supabase
         .from("inventory_items")
         .insert([
           {
             warehouse_id: targetWarehouseId,
-            code: itemData.codigo,
-            name: itemData.nombre,
+            code: itemData.codigo.trim(),
+            name: itemData.nombre.trim(),
             price: itemData.precio,
             quantity_available: itemData.cantidad,
             quantity_initial_today: itemData.cantidad,
             quantity_used_today: 0,
             created_by: userData.user.id,
+            ...(createdAt && { created_at: createdAt }),
           },
         ])
         .select()
@@ -362,8 +408,9 @@ export default function Home() {
         return
       }
 
-      // Registrar movimiento de creación
+      // Registrar movimiento de creación con la misma fecha de ingreso
       try {
+        const movementCreatedAt = createdAt || undefined
         const { error: movementError } = await supabase.from("inventory_movements").insert([
           {
             item_id: data[0].id,
@@ -374,6 +421,7 @@ export default function Home() {
             quantity_after: itemData.cantidad,
             description: `Producto creado: ${itemData.nombre}`,
             created_by: userData.user.id,
+            ...(movementCreatedAt && { created_at: movementCreatedAt }),
           },
         ])
 
@@ -407,7 +455,77 @@ export default function Home() {
     // Obtener el item antes de actualizar
     const { data: oldItem } = await supabase.from("inventory_items").select("*").eq("id", id).single()
 
-    const { error } = await supabase.from("inventory_items").update(updates).eq("id", id)
+    if (!oldItem) {
+      toast({
+        title: "Error",
+        description: "No se encontró el producto a actualizar",
+        variant: "destructive",
+      })
+      return
+    }
+
+    // Validar código duplicado si se está actualizando el código
+    if (updates.codigo || updates.code) {
+      const nuevoCodigo = (updates.codigo || updates.code || "").trim()
+      if (nuevoCodigo && nuevoCodigo !== (oldItem.code || oldItem.codigo)) {
+        const { data: existingCode } = await supabase
+          .from("inventory_items")
+          .select("id, code, name")
+          .eq("warehouse_id", oldItem.warehouse_id)
+          .eq("code", nuevoCodigo)
+          .neq("id", id)
+          .maybeSingle()
+
+        if (existingCode) {
+          toast({
+            title: "Código duplicado",
+            description: `Ya existe un producto con el código "${nuevoCodigo}" en esta bodega. Por favor, usa un código diferente.`,
+            variant: "destructive",
+          })
+          return
+        }
+      }
+    }
+
+    // Validar nombre duplicado si se está actualizando el nombre
+    if (updates.nombre || updates.name) {
+      const nuevoNombre = (updates.nombre || updates.name || "").trim()
+      if (nuevoNombre && nuevoNombre !== (oldItem.name || oldItem.nombre)) {
+        const { data: existingName } = await supabase
+          .from("inventory_items")
+          .select("id, code, name")
+          .eq("warehouse_id", oldItem.warehouse_id)
+          .ilike("name", nuevoNombre)
+          .neq("id", id)
+          .maybeSingle()
+
+        if (existingName) {
+          toast({
+            title: "Nombre duplicado",
+            description: `Ya existe un producto con el nombre "${nuevoNombre}" en esta bodega. Por favor, usa un nombre diferente.`,
+            variant: "destructive",
+          })
+          return
+        }
+      }
+    }
+
+    // Preparar actualización con campos correctos de Supabase
+    const updateData: any = {}
+    if (updates.codigo || updates.code) {
+      updateData.code = (updates.codigo || updates.code || "").trim()
+    }
+    if (updates.nombre || updates.name) {
+      updateData.name = (updates.nombre || updates.name || "").trim()
+    }
+    if (updates.cantidadDisponible !== undefined || updates.quantity_available !== undefined) {
+      updateData.quantity_available = updates.cantidadDisponible ?? updates.quantity_available
+    }
+    if (updates.precio !== undefined || updates.price !== undefined) {
+      updateData.price = updates.precio ?? updates.price
+    }
+
+    const { error } = await supabase.from("inventory_items").update(updateData).eq("id", id)
 
     if (error) {
       toast({
@@ -462,7 +580,7 @@ export default function Home() {
     })
   }
 
-  const handleMovement = async (id: string, cantidad: number, tipo: "entrada" | "salida") => {
+  const handleMovement = async (id: string, cantidad: number, tipo: "entrada" | "salida", fecha?: string, descripcion?: string) => {
     try {
       if (!supabase) {
         toast({
@@ -535,7 +653,10 @@ export default function Home() {
         return
       }
 
-      // Registrar movimiento
+      // Convertir fecha a formato ISO si se proporciona
+      const movementCreatedAt = fecha ? new Date(fecha + "T00:00:00").toISOString() : undefined
+
+      // Registrar movimiento con fecha y descripción
       await supabase.from("inventory_movements").insert([
         {
           item_id: id,
@@ -544,8 +665,9 @@ export default function Home() {
           quantity_before: currentQuantity,
           quantity_change: tipo === "entrada" ? cantidad : -cantidad,
           quantity_after: newQuantity,
-          description: `${tipo === "entrada" ? "Entrada" : "Salida"} de ${cantidad} unidades`,
+          description: descripcion || `${tipo === "entrada" ? "Entrada" : "Salida"} de ${cantidad} unidades`,
           created_by: userData.user?.id,
+          ...(movementCreatedAt && { created_at: movementCreatedAt }),
         },
       ])
 
@@ -717,13 +839,41 @@ export default function Home() {
       }
 
       try {
+        // Validar que el código no exista en la misma bodega
+        const { data: existingCode } = await supabase
+          .from("inventory_items")
+          .select("id, code, name")
+          .eq("warehouse_id", selectedWarehouseId)
+          .eq("code", codigo.trim())
+          .maybeSingle()
+
+        if (existingCode) {
+          errorCount++
+          console.error(`Línea ${i + 1}: Código "${codigo}" ya existe en esta bodega`)
+          continue
+        }
+
+        // Validar que el nombre no exista en la misma bodega
+        const { data: existingName } = await supabase
+          .from("inventory_items")
+          .select("id, code, name")
+          .eq("warehouse_id", selectedWarehouseId)
+          .ilike("name", nombre.trim())
+          .maybeSingle()
+
+        if (existingName) {
+          errorCount++
+          console.error(`Línea ${i + 1}: Nombre "${nombre}" ya existe en esta bodega`)
+          continue
+        }
+
         const { data, error } = await supabase
           .from("inventory_items")
           .insert([
             {
               warehouse_id: selectedWarehouseId,
-              code: codigo,
-              name: nombre,
+              code: codigo.trim(),
+              name: nombre.trim(),
               price: precioNum,
               quantity_available: Math.floor(cantidadNum),
               quantity_initial_today: Math.floor(cantidadNum),
@@ -912,6 +1062,7 @@ export default function Home() {
                 </div>
                 <InventoryTable
                   items={items}
+                  movements={movements}
                   onUpdate={handleUpdateItem}
                   onDelete={handleDeleteItem}
                   onMovement={handleMovement}
@@ -942,7 +1093,11 @@ export default function Home() {
                     Descarga reportes completos en formato Excel, Word o PDF
                   </p>
                 </div>
-                <ReportsGenerator items={items} movements={movements} />
+                <ReportsGenerator 
+                  items={items} 
+                  movements={movements} 
+                  currentWarehouseId={selectedWarehouseId}
+                />
               </TabsContent>
 
               {currentUser?.is_admin && (

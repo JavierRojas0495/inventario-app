@@ -8,11 +8,19 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Plus } from "lucide-react"
+import { Plus, CalendarIcon } from "lucide-react"
 import { getWarehouses } from "@/lib/warehouse"
+import { Calendar } from "@/components/ui/calendar"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { format } from "date-fns"
+import { es } from "date-fns/locale/es"
+import { cn } from "@/lib/utils"
 
 interface AddItemFormProps {
-  onAdd: (item: { codigo: string; nombre: string; cantidad: number; precio: number }, warehouseId?: string) => void
+  onAdd: (
+    item: { codigo: string; nombre: string; cantidad: number; precio: number; fechaIngreso?: string },
+    warehouseId?: string
+  ) => void
   currentWarehouseId?: string | null // Bodega actual seleccionada
 }
 
@@ -21,6 +29,7 @@ export function AddItemForm({ onAdd, currentWarehouseId }: AddItemFormProps) {
   const [nombre, setNombre] = useState("")
   const [cantidad, setCantidad] = useState("")
   const [precio, setPrecio] = useState("")
+  const [fechaIngreso, setFechaIngreso] = useState<Date | undefined>(new Date())
   const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>("") // Selector de bodega
 
   const needsWarehouseSelector = currentWarehouseId === "all"
@@ -45,6 +54,7 @@ export function AddItemForm({ onAdd, currentWarehouseId }: AddItemFormProps) {
         nombre: nombre.trim(),
         cantidad: Number.parseFloat(cantidad) || 0,
         precio: Number.parseFloat(precio) || 0,
+        fechaIngreso: fechaIngreso ? format(fechaIngreso, "yyyy-MM-dd") : undefined,
       },
       warehouseId || undefined,
     )
@@ -53,6 +63,7 @@ export function AddItemForm({ onAdd, currentWarehouseId }: AddItemFormProps) {
     setNombre("")
     setCantidad("")
     setPrecio("")
+    setFechaIngreso(new Date())
     setSelectedWarehouseId("")
   }
 
@@ -126,6 +137,32 @@ export function AddItemForm({ onAdd, currentWarehouseId }: AddItemFormProps) {
                 required
                 min="0"
               />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="fechaIngreso">Fecha de Ingreso</Label>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className={cn(
+                      "w-full justify-start text-left font-normal",
+                      !fechaIngreso && "text-muted-foreground"
+                    )}
+                  >
+                    <CalendarIcon className="mr-2 h-4 w-4" />
+                    {fechaIngreso ? format(fechaIngreso, "PPP", { locale: es }) : <span>Selecciona una fecha</span>}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    mode="single"
+                    selected={fechaIngreso}
+                    onSelect={setFechaIngreso}
+                    initialFocus
+                    locale={es}
+                  />
+                </PopoverContent>
+              </Popover>
             </div>
           </div>
           <Button type="submit" className="w-full md:w-auto">

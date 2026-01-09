@@ -1,22 +1,254 @@
 "use client"
 
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Label } from "@/components/ui/label"
+import { Input } from "@/components/ui/input"
+import { Checkbox } from "@/components/ui/checkbox"
 import type { InventoryItem, InventoryMovement } from "@/lib/inventory"
-import { FileSpreadsheet, FileText, FileDown } from "lucide-react"
+import { FileSpreadsheet, FileText, FileDown, CalendarIcon, WarehouseIcon } from "lucide-react"
 import { jsPDF } from "jspdf"
 import autoTable from "jspdf-autotable"
+import { format } from "date-fns"
+import { es } from "date-fns/locale/es"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Calendar } from "@/components/ui/calendar"
+import { cn } from "@/lib/utils"
+import { createClient } from "@/lib/supabase/client"
+
+interface Warehouse {
+  id: string
+  name: string
+}
 
 interface ReportsGeneratorProps {
   items: InventoryItem[]
   movements: InventoryMovement[]
+  currentWarehouseId?: string | null
 }
 
-export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
+export function ReportsGenerator({ items, movements, currentWarehouseId }: ReportsGeneratorProps) {
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([])
+  const [selectedWarehouseIds, setSelectedWarehouseIds] = useState<Set<string>>(new Set())
+  const [fechaInicio, setFechaInicio] = useState<Date | undefined>(() => {
+    const date = new Date()
+    date.setDate(1) // Primer día del mes actual
+    return date
+  })
+  const [fechaFin, setFechaFin] = useState<Date | undefined>(new Date())
+  const [usarFiltroFechas, setUsarFiltroFechas] = useState(false)
+  const supabase = createClient()
+
+  // Cargar bodegas disponibles
+  useEffect(() => {
+    const loadWarehouses = async () => {
+      if (!supabase) return
+      const { data } = await supabase.from("warehouses").select("id, name").order("name")
+      if (data) {
+        setWarehouses(data)
+        // Por defecto, seleccionar la bodega actual si existe
+        if (currentWarehouseId && currentWarehouseId !== "all") {
+          setSelectedWarehouseIds(new Set([currentWarehouseId]))
+        } else if (data.length > 0) {
+          // Si no hay bodega actual, seleccionar todas por defecto
+          setSelectedWarehouseIds(new Set(data.map((w) => w.id)))
+        }
+      }
+    }
+    loadWarehouses()
+  }, [supabase, currentWarehouseId])
+
+  // Filtrar items y movements por bodegas seleccionadas
+  const itemsFiltradosPorBodega = selectedWarehouseIds.size > 0
+    ? items.filter((item) => {
+        const warehouseId = (item as any).warehouse_id || (item as any).warehouseId
+        return warehouseId && selectedWarehouseIds.has(warehouseId)
+      })
+    : items
+
+  const movementsFiltradosPorBodega = selectedWarehouseIds.size > 0
+    ? movements.filter((mov) => {
+        const warehouseId = (mov as any).warehouse_id
+        return warehouseId && selectedWarehouseIds.has(warehouseId)
+      })
+    : movements
+
+  // Filtrar movimientos por rango de fechas si está habilitado
+  const movimientosFiltrados = usarFiltroFechas && fechaInicio && fechaFin
+    ? movementsFiltradosPorBodega.filter((mov) => {
+        const fechaMov = mov.fecha || mov.created_at
+        if (!fechaMov) return false
+        const fecha = new Date(fechaMov)
+        // Ajustar fechas para comparación solo por día
+        const fechaMovDate = new Date(fecha.getFullYear(), fecha.getMonth(), fecha.getDate())
+        const inicioDate = new Date(fechaInicio.getFullYear(), fechaInicio.getMonth(), fechaInicio.getDate())
+        const finDate = new Date(fechaFin.getFullYear(), fechaFin.getMonth(), fechaFin.getDate())
+        return fechaMovDate >= inicioDate && fechaMovDate <= finDate
+      })
+    : movementsFiltradosPorBodega
+
+  // Para items filtrados: usar items filtrados por bodega
+  const itemsFiltrados = itemsFiltradosPorBodega
+
+  // Calcular información contable
+  const calcularInformacionContable = () => {
+    // Calcular valores actuales del inventario (siempre) usando items filtrados por bodega
+    const cantidadQueda = itemsFiltradosPorBodega.reduce((sum, item) => {
+      const qty = item.cantidadDisponible ?? item.quantity_available ?? 0
+      return sum + (typeof qty === "number" ? qty : 0)
+    }, 0)
+
+    const valorTotalMercancia = itemsFiltradosPorBodega.reduce((sum, item) => {
+      const qty = item.cantidadDisponible ?? item.quantity_available ?? 0
+      const price = item.precio ?? item.price ?? 0
+      return sum + (typeof qty === "number" && typeof price === "number" ? qty * price : 0)
+    }, 0)
+
+    if (!usarFiltroFechas || !fechaInicio || !fechaFin) {
+      // Sin filtro: mostrar información actual
+      return {
+        mercanciaEntro: 0,
+        cantidadGastada: 0,
+        dineroGastado: 0,
+        cantidadQueda,
+        valorTotalMercancia,
+      }
+    }
+
+    // Con filtro: calcular basado en el período
+    const entradas = movimientosFiltrados.filter(
+      (mov) => (mov.tipo || mov.movement_type) === "entrada" || (mov.tipo || mov.movement_type) === "creacion"
+    )
+    const salidas = movimientosFiltrados.filter((mov) => (mov.tipo || mov.movement_type) === "salida")
+
+    // Mercancía que entró: suma de todas las entradas en el período
+    const mercanciaEntro = entradas.reduce((sum, mov) => {
+      const cantidadAnterior = mov.cantidadAnterior ?? mov.quantity_before ?? 0
+      const cantidadNueva = mov.cantidadNueva ?? mov.quantity_after ?? 0
+      const cantidadEntrada = Math.max(0, cantidadNueva - cantidadAnterior)
+      return sum + cantidadEntrada
+    }, 0)
+
+    // Cantidad gastada: suma de todas las salidas en el período
+    const cantidadGastada = salidas.reduce((sum, mov) => {
+      const cantidadAnterior = mov.cantidadAnterior ?? mov.quantity_before ?? 0
+      const cantidadNueva = mov.cantidadNueva ?? mov.quantity_after ?? 0
+      const cantidadSalida = Math.max(0, cantidadAnterior - cantidadNueva)
+      return sum + cantidadSalida
+    }, 0)
+
+    // Dinero gastado: salidas * precio del producto en el momento del movimiento
+    const dineroGastado = salidas.reduce((sum, mov) => {
+      const cantidadAnterior = mov.cantidadAnterior ?? mov.quantity_before ?? 0
+      const cantidadNueva = mov.cantidadNueva ?? mov.quantity_after ?? 0
+      const cantidadSalida = Math.max(0, cantidadAnterior - cantidadNueva)
+      
+      // Buscar el precio del producto (usar precio actual del item)
+      const itemId = mov.itemId || mov.item_id
+      const item = items.find((i) => i.id === itemId)
+      const precio = item?.precio ?? item?.price ?? 0
+      
+      return sum + (cantidadSalida * precio)
+    }, 0)
+
+    return {
+      mercanciaEntro,
+      cantidadGastada,
+      dineroGastado,
+      cantidadQueda,
+      valorTotalMercancia,
+    }
+  }
+
+  const infoContable = calcularInformacionContable()
+
+  // Calcular cantidad total en el período para un producto
+  const calcularCantidadTotalPeriodo = (item: InventoryItem) => {
+    if (!usarFiltroFechas || !fechaInicio || !fechaFin) {
+      // Sin filtro: usar cantidad inicial del día
+      return item.cantidadInicial ?? item.quantity_initial_today ?? 0
+    }
+
+    // Con filtro: calcular entradas en el período para este producto
+    const entradasProducto = movimientosFiltrados.filter(
+      (mov) =>
+        (mov.itemId === item.id || mov.item_id === item.id) &&
+        ((mov.tipo || mov.movement_type) === "entrada" || (mov.tipo || mov.movement_type) === "creacion")
+    )
+
+    const cantidadTotalEntradas = entradasProducto.reduce((sum, mov) => {
+      const cantidadAnterior = mov.cantidadAnterior ?? mov.quantity_before ?? 0
+      const cantidadNueva = mov.cantidadNueva ?? mov.quantity_after ?? 0
+      const cantidadEntrada = Math.max(0, cantidadNueva - cantidadAnterior)
+      return sum + cantidadEntrada
+    }, 0)
+
+    // Si no hay entradas en el período, usar cantidad inicial del día
+    return cantidadTotalEntradas > 0 ? cantidadTotalEntradas : item.cantidadInicial ?? item.quantity_initial_today ?? 0
+  }
+
+  // Calcular cantidad usada en el período para un producto
+  const calcularCantidadUsadaPeriodo = (item: InventoryItem) => {
+    if (!usarFiltroFechas || !fechaInicio || !fechaFin) {
+      // Sin filtro: usar cantidad usada del día
+      return item.cantidadUsada ?? item.quantity_used_today ?? 0
+    }
+
+    // Con filtro: calcular salidas en el período para este producto
+    const salidasProducto = movimientosFiltrados.filter(
+      (mov) =>
+        (mov.itemId === item.id || mov.item_id === item.id) &&
+        (mov.tipo || mov.movement_type) === "salida"
+    )
+
+    const cantidadTotalSalidas = salidasProducto.reduce((sum, mov) => {
+      const cantidadAnterior = mov.cantidadAnterior ?? mov.quantity_before ?? 0
+      const cantidadNueva = mov.cantidadNueva ?? mov.quantity_after ?? 0
+      const cantidadSalida = Math.max(0, cantidadAnterior - cantidadNueva)
+      return sum + cantidadSalida
+    }, 0)
+
+    return cantidadTotalSalidas
+  }
+
+  // Obtener nombres de bodegas seleccionadas
+  const obtenerNombresBodegasSeleccionadas = () => {
+    if (selectedWarehouseIds.size === 0) return "Ninguna bodega seleccionada"
+    if (selectedWarehouseIds.size === warehouses.length) return "Todas las bodegas"
+    
+    const nombres = warehouses
+      .filter((w) => selectedWarehouseIds.has(w.id))
+      .map((w) => w.name)
+    return nombres.length === 1 ? nombres[0] : nombres.join(", ")
+  }
+
+  const nombreBodega = obtenerNombresBodegasSeleccionadas()
+
+  // Manejar selección de bodegas
+  const toggleWarehouse = (warehouseId: string) => {
+    const newSet = new Set(selectedWarehouseIds)
+    if (newSet.has(warehouseId)) {
+      newSet.delete(warehouseId)
+    } else {
+      newSet.add(warehouseId)
+    }
+    setSelectedWarehouseIds(newSet)
+  }
+
+  const selectAllWarehouses = () => {
+    setSelectedWarehouseIds(new Set(warehouses.map((w) => w.id)))
+  }
+
+  const deselectAllWarehouses = () => {
+    setSelectedWarehouseIds(new Set())
+  }
+
   const generateCSV = () => {
     try {
-      if (!items || items.length === 0) {
-        alert("No hay productos para exportar")
+      const itemsParaExportar = itemsFiltradosPorBodega
+      if (!itemsParaExportar || itemsParaExportar.length === 0) {
+        alert("No hay productos para exportar en el rango de fechas seleccionado")
         return
       }
 
@@ -27,7 +259,7 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
         "Cantidad",
         "Precio",
       ]
-      const rows = items
+      const rows = itemsParaExportar
         .filter((item) => item && item.id) // Filtrar items inválidos
         .map((item) => {
         const codigo = item.codigo || item.code || ""
@@ -60,23 +292,20 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
 
   const generateWord = () => {
     try {
-      if (!items || items.length === 0) {
-        alert("No hay productos para exportar")
+      const itemsParaExportar = itemsFiltradosPorBodega
+      if (!itemsParaExportar || itemsParaExportar.length === 0) {
+        alert("No hay productos para exportar en el rango de fechas seleccionado")
         return
       }
 
-      const totalValor = items.reduce((sum, item) => {
+      const totalValor = itemsParaExportar.reduce((sum, item) => {
       const qty = item.cantidadDisponible ?? item.quantity_available ?? 0
       const price = item.precio ?? item.price ?? 0
       return sum + (typeof qty === 'number' && typeof price === 'number' ? qty * price : 0)
     }, 0)
-    const totalUnidades = items.reduce((sum, item) => {
+    const totalUnidades = itemsParaExportar.reduce((sum, item) => {
       const qty = item.cantidadDisponible ?? item.quantity_available ?? 0
       return sum + (typeof qty === 'number' ? qty : 0)
-    }, 0)
-    const totalUsado = items.reduce((sum, item) => {
-      const used = item.cantidadUsada ?? item.quantity_used_today ?? 0
-      return sum + (typeof used === 'number' ? used : 0)
     }, 0)
 
     const htmlContent = `
@@ -99,63 +328,74 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
       </head>
       <body>
         <h1>Informe de Inventario</h1>
-        <p><strong>Fecha de generación:</strong> ${new Date().toLocaleString("es-ES")}</p>
+        <p><strong>Bodega:</strong> ${nombreBodega}</p>
+        <p><strong>Fecha de generación:</strong> ${format(new Date(), "PPP", { locale: es })}</p>
+        ${
+          usarFiltroFechas && fechaInicio && fechaFin
+            ? `<p><strong>Período:</strong> ${format(fechaInicio, "PPP", { locale: es })} - ${format(fechaFin, "PPP", { locale: es })}</p>`
+            : ""
+        }
         
         <div class="summary">
           <h2>Resumen General</h2>
-          <div class="summary-item"><strong>Total de productos:</strong> ${items.length}</div>
-          <div class="summary-item"><strong>Total de unidades disponibles:</strong> ${totalUnidades}</div>
-          <div class="summary-item"><strong>Total usado hoy:</strong> ${totalUsado}</div>
-          <div class="summary-item"><strong>Valor total del inventario:</strong> $${totalValor.toFixed(2)}</div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+            <div class="summary-item"><strong>Total de productos:</strong> ${itemsParaExportar.length}</div>
+            <div class="summary-item"><strong>Valor Inventario:</strong> $${totalValor.toFixed(2)}</div>
+          </div>
+          ${
+            usarFiltroFechas
+              ? `
+            <div style="border-top: 2px solid #4a90e2; padding-top: 20px; margin-top: 20px;">
+              <h3 style="color: #4a90e2; margin-bottom: 15px;">Información Contable del Período</h3>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                <div class="summary-item"><strong>Mercancía que entró:</strong> ${infoContable.mercanciaEntro.toLocaleString()} unidades</div>
+                <div class="summary-item"><strong>Cantidad gastada:</strong> ${infoContable.cantidadGastada.toLocaleString()} unidades</div>
+                <div class="summary-item"><strong>Dinero gastado:</strong> $${infoContable.dineroGastado.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                <div class="summary-item"><strong>Cantidad que queda:</strong> ${infoContable.cantidadQueda.toLocaleString()} unidades</div>
+                <div class="summary-item" style="grid-column: 1 / -1; font-size: 18px; color: #4a90e2; padding-top: 10px; border-top: 1px solid #ddd;">
+                  <strong>Valor total de mercancía:</strong> $${infoContable.valorTotalMercancia.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+            </div>
+          `
+              : ""
+          }
         </div>
 
         <h2>Detalle de Productos</h2>
         <table>
           <thead>
             <tr>
-              <th>Código</th>
-              <th>Nombre</th>
-              <th>Inicial</th>
-              <th>Usado Hoy</th>
-              <th>Disponible</th>
-              <th>Precio</th>
-              <th>Valor Total</th>
-              <th>Última Actualización</th>
+              <th style="text-align: left;">Código</th>
+              <th style="text-align: left;">Nombre</th>
+              <th style="text-align: center;">Cantidad Total en el Período</th>
+              <th style="text-align: center;">Usado en el Período</th>
+              <th style="text-align: center;">Disponible</th>
+              <th style="text-align: right;">Valor cada unidad</th>
+              <th style="text-align: right;">Valor de toda la mercancía</th>
             </tr>
           </thead>
           <tbody>
-            ${items
+            ${itemsParaExportar
               .filter((item) => item && item.id)
               .map((item) => {
                 const codigo = item.codigo || item.code || ""
                 const nombre = item.nombre || item.name || ""
-                const cantidadInicial = item.cantidadInicial ?? item.quantity_initial_today ?? 0
-                const cantidadUsada = item.cantidadUsada ?? item.quantity_used_today ?? 0
+                const cantidadTotalPeriodo = calcularCantidadTotalPeriodo(item)
+                const cantidadUsadaPeriodo = calcularCantidadUsadaPeriodo(item)
                 const cantidadDisponible = item.cantidadDisponible ?? item.quantity_available ?? 0
                 const precio = item.precio ?? item.price ?? 0
-                const fechaActualizacion = item.fechaActualizacion || item.updated_at || item.created_at || new Date().toISOString()
-                
-                // Validar y formatear fecha
-                let fechaFormateada = "Fecha inválida"
-                try {
-                  const fecha = new Date(fechaActualizacion)
-                  if (!isNaN(fecha.getTime())) {
-                    fechaFormateada = fecha.toLocaleString("es-ES")
-                  }
-                } catch (e) {
-                  console.error("Error al formatear fecha en Word:", e, fechaActualizacion)
-                }
+                const valorTotalMercancia = cantidadDisponible * precio
 
                 return `
               <tr>
                 <td>${codigo}</td>
                 <td>${nombre}</td>
-                <td>${cantidadInicial}</td>
-                <td>${cantidadUsada}</td>
-                <td>${cantidadDisponible}</td>
-                <td>$${precio.toFixed(2)}</td>
-                <td>$${(cantidadDisponible * precio).toFixed(2)}</td>
-                <td>${fechaFormateada}</td>
+                <td style="text-align: center;">${cantidadTotalPeriodo}</td>
+                <td style="text-align: center;">${cantidadUsadaPeriodo}</td>
+                <td style="text-align: center;">${cantidadDisponible}</td>
+                <td style="text-align: right;">$${precio.toFixed(2)}</td>
+                <td style="text-align: right;">$${valorTotalMercancia.toFixed(2)}</td>
               </tr>
             `
               })
@@ -176,7 +416,7 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
             </tr>
           </thead>
           <tbody>
-            ${movements
+            ${(usarFiltroFechas ? movimientosFiltrados : movements)
               .filter((mov) => mov && mov.id)
               .slice(0, 20)
               .map((mov) => {
@@ -187,7 +427,7 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
                 try {
                   const fecha = new Date(fechaStr)
                   if (!isNaN(fecha.getTime())) {
-                    fechaFormateada = fecha.toLocaleString("es-ES")
+                    fechaFormateada = format(fecha, "PPP", { locale: es })
                   }
                 } catch (e) {
                   console.error("Error al formatear fecha:", e, fechaStr)
@@ -226,6 +466,18 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
           </tbody>
         </table>
 
+        <div class="summary" style="margin-top: 40px; border-top: 3px solid #4a90e2; padding-top: 20px;">
+          <h2 style="color: #4a90e2; margin-bottom: 15px;">Resumen Final</h2>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+            <div class="summary-item"><strong>Total de productos:</strong> ${itemsParaExportar.length}</div>
+            <div class="summary-item"><strong>Total Unidades Disponibles:</strong> ${totalUnidades.toLocaleString()}</div>
+            <div class="summary-item" style="grid-column: 1 / -1; font-size: 18px; color: #4a90e2; padding-top: 10px; border-top: 1px solid #ddd;">
+              <strong>Valor Inventario Total:</strong> $${totalValor.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+            <div class="summary-item" style="grid-column: 1 / -1;"><strong>Bodega:</strong> ${nombreBodega}</div>
+          </div>
+        </div>
+
         <div class="footer">
           <p>Informe generado automáticamente por Sistema de Inventario</p>
         </div>
@@ -246,64 +498,92 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
 
   const generatePDF = () => {
     try {
-      if (!items || items.length === 0) {
-        alert("No hay productos para exportar")
+      const itemsParaExportar = itemsFiltradosPorBodega
+      if (!itemsParaExportar || itemsParaExportar.length === 0) {
+        alert("No hay productos para exportar en el rango de fechas seleccionado")
         return
       }
 
       const doc = new jsPDF()
-      const totalValor = items.reduce((sum, item) => {
+      const totalValor = itemsParaExportar.reduce((sum, item) => {
       const qty = item.cantidadDisponible ?? item.quantity_available ?? 0
       const price = item.precio ?? item.price ?? 0
       return sum + (typeof qty === 'number' && typeof price === 'number' ? qty * price : 0)
     }, 0)
-    const totalUnidades = items.reduce((sum, item) => {
+    const totalUnidades = itemsParaExportar.reduce((sum, item) => {
       const qty = item.cantidadDisponible ?? item.quantity_available ?? 0
       return sum + (typeof qty === 'number' ? qty : 0)
-    }, 0)
-    const totalUsado = items.reduce((sum, item) => {
-      const used = item.cantidadUsada ?? item.quantity_used_today ?? 0
-      return sum + (typeof used === 'number' ? used : 0)
     }, 0)
 
     // Título
     doc.setFontSize(20)
     doc.text("Informe de Inventario", 14, 20)
 
-    // Fecha
+    // Bodega y Fecha
     doc.setFontSize(10)
-    doc.text(`Fecha de generación: ${new Date().toLocaleString("es-ES")}`, 14, 30)
+    doc.text(`Bodega: ${nombreBodega}`, 14, 30)
+    doc.text(`Fecha de generación: ${format(new Date(), "dd/MM/yyyy")}`, 14, 40)
+    
+    let yPos = 50
+    if (usarFiltroFechas && fechaInicio && fechaFin) {
+      doc.text(
+        `Período: ${format(fechaInicio, "dd/MM/yyyy")} - ${format(fechaFin, "dd/MM/yyyy")}`,
+        14,
+        yPos
+      )
+      yPos += 7
+    }
 
     // Resumen
     doc.setFontSize(14)
-    doc.text("Resumen General", 14, 45)
+    doc.text("Resumen General", 14, yPos)
+    yPos += 10
     doc.setFontSize(10)
-    doc.text(`Total de productos: ${items.length}`, 14, 55)
-    doc.text(`Total de unidades disponibles: ${totalUnidades}`, 14, 62)
-    doc.text(`Total usado hoy: ${totalUsado}`, 14, 69)
-    doc.text(`Valor total del inventario: $${totalValor.toFixed(2)}`, 14, 76)
+    doc.text(`Total de productos: ${itemsParaExportar.length}`, 14, yPos)
+    yPos += 7
+    doc.text(`Valor Inventario: $${totalValor.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 14, yPos)
+    
+    if (usarFiltroFechas) {
+      yPos += 10
+      doc.setFontSize(12)
+      doc.text("Información Contable del Período", 14, yPos)
+      yPos += 7
+      doc.setFontSize(10)
+      doc.text(`Mercancía que entró: ${infoContable.mercanciaEntro.toLocaleString()} unidades`, 14, yPos)
+      yPos += 7
+      doc.text(`Cantidad gastada: ${infoContable.cantidadGastada.toLocaleString()} unidades`, 14, yPos)
+      yPos += 7
+      doc.text(`Dinero gastado: $${infoContable.dineroGastado.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 14, yPos)
+      yPos += 7
+      doc.text(`Cantidad que queda: ${infoContable.cantidadQueda.toLocaleString()} unidades`, 14, yPos)
+      yPos += 7
+      doc.text(`Valor total de mercancía: $${infoContable.valorTotalMercancia.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 14, yPos)
+      yPos += 5
+    }
 
     // Tabla de productos
     autoTable(doc, {
-      startY: 85,
-      head: [["Código", "Nombre", "Inicial", "Usado", "Disponible", "Precio"]],
-      body: items
+      startY: yPos + 5,
+      head: [["Código", "Nombre", "Cant. Total Período", "Usado Período", "Disponible", "Valor Unidad", "Valor Total"]],
+      body: itemsParaExportar
         .filter((item) => item && item.id)
         .map((item) => {
           const codigo = item.codigo || item.code || ""
           const nombre = item.nombre || item.name || ""
-          const cantidadInicial = item.cantidadInicial ?? item.quantity_initial_today ?? 0
-          const cantidadUsada = item.cantidadUsada ?? item.quantity_used_today ?? 0
+          const cantidadTotalPeriodo = calcularCantidadTotalPeriodo(item)
+          const cantidadUsadaPeriodo = calcularCantidadUsadaPeriodo(item)
           const cantidadDisponible = item.cantidadDisponible ?? item.quantity_available ?? 0
           const precio = item.precio ?? item.price ?? 0
+          const valorTotalMercancia = cantidadDisponible * precio
 
           return [
             codigo,
             nombre,
-            cantidadInicial,
-            cantidadUsada,
-            cantidadDisponible,
+            cantidadTotalPeriodo.toString(),
+            cantidadUsadaPeriodo.toString(),
+            cantidadDisponible.toString(),
             `$${precio.toFixed(2)}`,
+            `$${valorTotalMercancia.toFixed(2)}`,
           ]
         }),
       theme: "striped",
@@ -318,7 +598,7 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
     autoTable(doc, {
       startY: finalY + 20,
       head: [["Fecha", "Producto", "Tipo", "Cant. Ant.", "Cant. Nueva"]],
-      body: (movements || [])
+      body: movimientosFiltrados
         .filter((mov) => mov && mov.id)
         .slice(0, 15)
         .map((mov) => {
@@ -329,13 +609,7 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
           try {
             const fecha = new Date(fechaStr)
             if (!isNaN(fecha.getTime())) {
-              fechaFormateada = fecha.toLocaleString("es-ES", {
-                day: "2-digit",
-                month: "2-digit",
-                year: "numeric",
-                hour: "2-digit",
-                minute: "2-digit",
-              })
+              fechaFormateada = format(fecha, "dd/MM/yyyy")
             }
           } catch (e) {
             console.error("Error al formatear fecha:", e, fechaStr)
@@ -359,6 +633,16 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
       headStyles: { fillColor: [74, 144, 226] },
     })
 
+    // Resumen final
+    const finalY2 = (doc as any).lastAutoTable.finalY || yPos + 20
+    doc.setFontSize(14)
+    doc.text("Resumen Final", 14, finalY2 + 15)
+    doc.setFontSize(10)
+    doc.text(`Total de productos: ${itemsParaExportar.length}`, 14, finalY2 + 25)
+    doc.text(`Total Unidades Disponibles: ${totalUnidades.toLocaleString()}`, 14, finalY2 + 32)
+    doc.text(`Valor Inventario Total: $${totalValor.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 14, finalY2 + 39)
+    doc.text(`Bodega: ${nombreBodega}`, 14, finalY2 + 46)
+
       doc.save(`informe_inventario_${new Date().toISOString().split("T")[0]}.pdf`)
     } catch (error) {
       console.error("Error al generar PDF:", error)
@@ -372,7 +656,155 @@ export function ReportsGenerator({ items, movements }: ReportsGeneratorProps) {
         <CardTitle>Generar Informes</CardTitle>
         <CardDescription>Descarga reportes del inventario en diferentes formatos</CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        {/* Selector de bodegas */}
+        <div className="space-y-4 p-4 border rounded-lg bg-muted/50">
+          <div className="flex items-center justify-between">
+            <Label className="font-semibold flex items-center gap-2">
+              <WarehouseIcon className="h-4 w-4" />
+              Bodegas para el Informe
+            </Label>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={selectAllWarehouses}
+                className="h-7 text-xs"
+              >
+                Seleccionar todas
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={deselectAllWarehouses}
+                className="h-7 text-xs"
+              >
+                Deseleccionar todas
+              </Button>
+            </div>
+          </div>
+          
+          {warehouses.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No hay bodegas disponibles</p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {warehouses.map((warehouse) => (
+                <div key={warehouse.id} className="flex items-center space-x-2">
+                  <Checkbox
+                    id={`warehouse-${warehouse.id}`}
+                    checked={selectedWarehouseIds.has(warehouse.id)}
+                    onCheckedChange={() => toggleWarehouse(warehouse.id)}
+                  />
+                  <Label
+                    htmlFor={`warehouse-${warehouse.id}`}
+                    className="text-sm font-normal cursor-pointer flex-1"
+                  >
+                    {warehouse.name}
+                  </Label>
+                </div>
+              ))}
+            </div>
+          )}
+          
+          {selectedWarehouseIds.size > 0 && (
+            <p className="text-sm text-muted-foreground pt-2 border-t">
+              <strong>Bodegas seleccionadas:</strong> {nombreBodega}
+            </p>
+          )}
+        </div>
+
+        {/* Selector de fechas */}
+        <div className="space-y-4 p-4 border rounded-lg bg-muted/50">
+          <div className="flex items-center space-x-2">
+            <input
+              type="checkbox"
+              id="usarFiltroFechas"
+              checked={usarFiltroFechas}
+              onChange={(e) => setUsarFiltroFechas(e.target.checked)}
+              className="h-4 w-4"
+            />
+            <Label htmlFor="usarFiltroFechas" className="font-semibold cursor-pointer">
+              Filtrar por rango de fechas
+            </Label>
+          </div>
+
+          {usarFiltroFechas && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Fecha de Inicio</Label>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className={cn(
+                        "w-full justify-start text-left font-normal",
+                        !fechaInicio && "text-muted-foreground"
+                      )}
+                    >
+                      <CalendarIcon className="mr-2 h-4 w-4" />
+                      {fechaInicio ? format(fechaInicio, "PPP", { locale: es }) : <span>Selecciona fecha</span>}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0" align="start">
+                    <Calendar mode="single" selected={fechaInicio} onSelect={setFechaInicio} initialFocus locale={es} />
+                  </PopoverContent>
+                </Popover>
+              </div>
+              <div className="space-y-2">
+                <Label>Fecha de Fin</Label>
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className={cn(
+                        "w-full justify-start text-left font-normal",
+                        !fechaFin && "text-muted-foreground"
+                      )}
+                    >
+                      <CalendarIcon className="mr-2 h-4 w-4" />
+                      {fechaFin ? format(fechaFin, "PPP", { locale: es }) : <span>Selecciona fecha</span>}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0" align="start">
+                    <Calendar mode="single" selected={fechaFin} onSelect={setFechaFin} initialFocus locale={es} />
+                  </PopoverContent>
+                </Popover>
+              </div>
+            </div>
+          )}
+
+          {/* Resumen contable */}
+          {usarFiltroFechas && fechaInicio && fechaFin && (
+            <div className="mt-4 p-4 bg-background rounded-lg border">
+              <h3 className="font-semibold mb-3">Resumen Contable del Período</h3>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+                <div>
+                  <p className="text-muted-foreground">Mercancía que entró</p>
+                  <p className="font-semibold">{infoContable.mercanciaEntro} unidades</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Cantidad gastada</p>
+                  <p className="font-semibold">{infoContable.cantidadGastada} unidades</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Dinero gastado</p>
+                  <p className="font-semibold">${infoContable.dineroGastado.toFixed(2)}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Cantidad que queda</p>
+                  <p className="font-semibold">{infoContable.cantidadQueda} unidades</p>
+                </div>
+                <div className="md:col-span-2">
+                  <p className="text-muted-foreground">Valor total de mercancía</p>
+                  <p className="font-semibold text-lg">${infoContable.valorTotalMercancia.toFixed(2)}</p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <Button onClick={generateCSV} variant="outline" className="h-auto py-4 flex-col gap-2 bg-transparent">
             <FileSpreadsheet className="h-8 w-8 text-green-600" />
