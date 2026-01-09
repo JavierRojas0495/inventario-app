@@ -59,18 +59,23 @@ export function ReportsGenerator({ items, movements, currentWarehouseId }: Repor
     loadWarehouses()
   }, [supabase, currentWarehouseId])
 
-  // Filtrar items y movements por bodegas seleccionadas
-  const itemsFiltradosPorBodega = selectedWarehouseIds.size > 0
+  // Determinar qué bodegas usar: si no hay selección, usar la bodega actual
+  const bodegasAUsar = selectedWarehouseIds.size > 0 
+    ? selectedWarehouseIds 
+    : (currentWarehouseId && currentWarehouseId !== "all" ? new Set([currentWarehouseId]) : new Set<string>())
+
+  // Filtrar items y movements por bodegas seleccionadas o bodega actual
+  const itemsFiltradosPorBodega = bodegasAUsar.size > 0
     ? items.filter((item) => {
         const warehouseId = (item as any).warehouse_id || (item as any).warehouseId
-        return warehouseId && selectedWarehouseIds.has(warehouseId)
+        return warehouseId && bodegasAUsar.has(warehouseId)
       })
     : items
 
-  const movementsFiltradosPorBodega = selectedWarehouseIds.size > 0
+  const movementsFiltradosPorBodega = bodegasAUsar.size > 0
     ? movements.filter((mov) => {
         const warehouseId = (mov as any).warehouse_id
-        return warehouseId && selectedWarehouseIds.has(warehouseId)
+        return warehouseId && bodegasAUsar.has(warehouseId)
       })
     : movements
 
@@ -212,18 +217,85 @@ export function ReportsGenerator({ items, movements, currentWarehouseId }: Repor
     return cantidadTotalSalidas
   }
 
-  // Obtener nombres de bodegas seleccionadas
+  // Obtener nombres de bodegas seleccionadas o bodega actual
   const obtenerNombresBodegasSeleccionadas = () => {
-    if (selectedWarehouseIds.size === 0) return "Ninguna bodega seleccionada"
-    if (selectedWarehouseIds.size === warehouses.length) return "Todas las bodegas"
+    // Si hay bodegas seleccionadas explícitamente, usar esas
+    if (selectedWarehouseIds.size > 0) {
+      if (selectedWarehouseIds.size === warehouses.length) return "Todas las bodegas"
+      
+      const nombres = warehouses
+        .filter((w) => selectedWarehouseIds.has(w.id))
+        .map((w) => w.name)
+      return nombres.length === 1 ? nombres[0] : nombres.join(", ")
+    }
     
-    const nombres = warehouses
-      .filter((w) => selectedWarehouseIds.has(w.id))
-      .map((w) => w.name)
-    return nombres.length === 1 ? nombres[0] : nombres.join(", ")
+    // Si no hay selección, usar la bodega actual
+    if (currentWarehouseId && currentWarehouseId !== "all") {
+      const bodegaActual = warehouses.find((w) => w.id === currentWarehouseId)
+      return bodegaActual ? bodegaActual.name : "Bodega actual"
+    }
+    
+    // Si es "all", mostrar todas las bodegas
+    if (currentWarehouseId === "all") {
+      return "Todas las bodegas"
+    }
+    
+    return "Ninguna bodega seleccionada"
   }
 
   const nombreBodega = obtenerNombresBodegasSeleccionadas()
+
+  // Agrupar movimientos por producto y ordenar por fecha
+  const agruparMovimientosPorProducto = (movs: InventoryMovement[]) => {
+    // Primero, obtener información completa de cada movimiento
+    const movimientosCompletos = movs
+      .filter((mov) => mov && mov.id)
+      .map((mov) => {
+        const itemId = (mov as any).itemId || (mov as any).item_id
+        const item = itemsFiltradosPorBodega.find((i) => i.id === itemId)
+        const itemNombre = item?.nombre || item?.name || mov.itemNombre || "Producto desconocido"
+        const itemCodigo = item?.codigo || item?.code || mov.itemCodigo || ""
+        const fechaStr = mov.fecha || mov.created_at || new Date().toISOString()
+        const fecha = new Date(fechaStr)
+        
+        return {
+          ...mov,
+          itemId: itemId,
+          itemNombre,
+          itemCodigo,
+          fechaTimestamp: fecha.getTime(),
+          fechaStr,
+        }
+      })
+      .filter((mov) => mov.itemId) // Solo movimientos con item válido
+
+    // Agrupar por producto
+    const agrupados = new Map<string, typeof movimientosCompletos>()
+    
+    movimientosCompletos.forEach((mov) => {
+      const key = mov.itemId
+      if (!agrupados.has(key)) {
+        agrupados.set(key, [])
+      }
+      agrupados.get(key)!.push(mov)
+    })
+
+    // Ordenar cada grupo por fecha (más reciente primero) y ordenar productos por nombre
+    const productosOrdenados = Array.from(agrupados.entries())
+      .map(([itemId, movs]) => {
+        const item = itemsFiltradosPorBodega.find((i) => i.id === itemId)
+        const itemNombre = item?.nombre || item?.name || "Producto desconocido"
+        return {
+          itemId,
+          itemNombre,
+          itemCodigo: item?.codigo || item?.code || "",
+          movimientos: movs.sort((a, b) => b.fechaTimestamp - a.fechaTimestamp), // Más reciente primero
+        }
+      })
+      .sort((a, b) => a.itemNombre.localeCompare(b.itemNombre)) // Ordenar productos por nombre
+
+    return productosOrdenados
+  }
 
   // Manejar selección de bodegas
   const toggleWarehouse = (warehouseId: string) => {
@@ -404,21 +476,92 @@ export function ReportsGenerator({ items, movements, currentWarehouseId }: Repor
         </table>
 
         <h2>Últimos Movimientos</h2>
+        ${(() => {
+          const movimientosParaMostrar = usarFiltroFechas ? movimientosFiltrados : movementsFiltradosPorBodega
+          const movimientosAgrupados = agruparMovimientosPorProducto(movimientosParaMostrar)
+          
+          if (movimientosAgrupados.length === 0) {
+            return `<p style="text-align: center; color: #999; padding: 20px;">No hay movimientos registrados</p>`
+          }
+
+          // Función para escapar HTML
+          const escapeHtml = (text: string) => {
+            if (!text) return ""
+            return String(text)
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;")
+              .replace(/"/g, "&quot;")
+              .replace(/'/g, "&#039;")
+          }
+
+          return movimientosAgrupados.map((grupo) => {
+            const filas = grupo.movimientos.slice(0, 20).map((mov) => {
+              let fechaFormateada = "Fecha inválida"
+              try {
+                const fecha = new Date(mov.fechaStr)
+                if (!isNaN(fecha.getTime())) {
+                  fechaFormateada = format(fecha, "PPP", { locale: es })
+                }
+              } catch (e) {
+                console.error("Error al formatear fecha:", e, mov.fechaStr)
+              }
+
+              const tipo = mov.tipo || mov.movement_type || "ajuste"
+              const cantidadAnterior = mov.cantidadAnterior ?? mov.quantity_before ?? 0
+              const cantidadNueva = mov.cantidadNueva ?? mov.quantity_after ?? 0
+              const descripcion = mov.descripcion || mov.description || ""
+
+              return `
+                <tr>
+                  <td>${escapeHtml(fechaFormateada)}</td>
+                  <td>${escapeHtml(tipo)}</td>
+                  <td>${cantidadAnterior}</td>
+                  <td>${cantidadNueva}</td>
+                  <td>${escapeHtml(descripcion)}</td>
+                </tr>
+              `
+            }).join("")
+
+            return `
+              <div style="margin-bottom: 30px;">
+                <h3 style="background-color: #4a90e2; color: white; padding: 10px; margin: 0; border-radius: 4px 4px 0 0;">
+                  ${escapeHtml(grupo.itemNombre)} ${grupo.itemCodigo ? `(${escapeHtml(grupo.itemCodigo)})` : ""}
+                </h3>
+                <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+                  <thead>
+                    <tr style="background-color: #f5f5f5;">
+                      <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Fecha</th>
+                      <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Tipo</th>
+                      <th style="border: 1px solid #ddd; padding: 8px; text-align: center;">Cant. Ant.</th>
+                      <th style="border: 1px solid #ddd; padding: 8px; text-align: center;">Cant. Nueva</th>
+                      <th style="border: 1px solid #ddd; padding: 8px; text-align: left;">Descripción</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${filas}
+                  </tbody>
+                </table>
+              </div>
+            `
+          }).join("")
+        })()}
+
+        <h2 style="margin-top: 40px; border-top: 2px solid #4a90e2; padding-top: 20px;">Observaciones y Notas</h2>
         <table>
           <thead>
             <tr>
               <th>Fecha</th>
               <th>Producto</th>
+              <th>Código</th>
               <th>Tipo</th>
-              <th>Cantidad Anterior</th>
-              <th>Cantidad Nueva</th>
-              <th>Descripción</th>
+              <th>Cantidad</th>
+              <th>Observaciones</th>
             </tr>
           </thead>
           <tbody>
-            ${(usarFiltroFechas ? movimientosFiltrados : movements)
-              .filter((mov) => mov && mov.id)
-              .slice(0, 20)
+            ${(usarFiltroFechas ? movimientosFiltrados : movementsFiltradosPorBodega)
+              .filter((mov) => mov && mov.id && (mov.descripcion || mov.description))
               .map((mov) => {
                 // Manejar diferentes formatos de fecha
                 const fechaStr = mov.fecha || mov.created_at || new Date().toISOString()
@@ -433,12 +576,13 @@ export function ReportsGenerator({ items, movements, currentWarehouseId }: Repor
                   console.error("Error al formatear fecha:", e, fechaStr)
                 }
 
-                // Manejar diferentes formatos de campos
-                const itemNombre = mov.itemNombre || mov.description?.split(":")[0] || mov.description || "Producto desconocido"
+                // Buscar el item para obtener código y nombre
+                const item = itemsParaExportar.find((i) => i.id === (mov.itemId || mov.item_id))
+                const itemNombre = item?.nombre || item?.name || mov.itemNombre || "Producto desconocido"
+                const itemCodigo = item?.codigo || item?.code || mov.itemCodigo || ""
                 const tipo = mov.tipo || mov.movement_type || "ajuste"
-                const cantidadAnterior = mov.cantidadAnterior ?? mov.quantity_before ?? 0
-                const cantidadNueva = mov.cantidadNueva ?? mov.quantity_after ?? 0
-                const descripcion = mov.descripcion || mov.description || ""
+                const cantidadCambio = mov.diferencia ?? Math.abs(mov.quantity_change ?? 0)
+                const descripcion = mov.descripcion || mov.description || "Sin observaciones"
 
                 // Función para escapar HTML
                 const escapeHtml = (text: string) => {
@@ -455,14 +599,17 @@ export function ReportsGenerator({ items, movements, currentWarehouseId }: Repor
               <tr>
                 <td>${escapeHtml(fechaFormateada)}</td>
                 <td>${escapeHtml(itemNombre)}</td>
+                <td>${escapeHtml(itemCodigo)}</td>
                 <td>${escapeHtml(tipo)}</td>
-                <td>${cantidadAnterior}</td>
-                <td>${cantidadNueva}</td>
+                <td style="text-align: center;">${tipo === "entrada" ? "+" : tipo === "salida" ? "-" : ""}${cantidadCambio}</td>
                 <td>${escapeHtml(descripcion)}</td>
               </tr>
             `
               })
               .join("")}
+            ${(usarFiltroFechas ? movimientosFiltrados : movementsFiltradosPorBodega).filter((mov) => mov && mov.id && (mov.descripcion || mov.description)).length === 0
+              ? `<tr><td colspan="6" style="text-align: center; color: #999; padding: 20px;">No hay observaciones registradas en el período seleccionado</td></tr>`
+              : ""}
           </tbody>
         </table>
 
@@ -590,18 +737,90 @@ export function ReportsGenerator({ items, movements, currentWarehouseId }: Repor
       headStyles: { fillColor: [74, 144, 226] },
     })
 
-    // Tabla de movimientos
+    // Tabla de movimientos agrupados por producto
     const finalY = (doc as any).lastAutoTable.finalY || 85
     doc.setFontSize(14)
     doc.text("Últimos Movimientos", 14, finalY + 15)
 
-    autoTable(doc, {
-      startY: finalY + 20,
-      head: [["Fecha", "Producto", "Tipo", "Cant. Ant.", "Cant. Nueva"]],
-      body: movimientosFiltrados
-        .filter((mov) => mov && mov.id)
-        .slice(0, 15)
-        .map((mov) => {
+    const movimientosParaMostrar = usarFiltroFechas ? movimientosFiltrados : movementsFiltradosPorBodega
+    const movimientosAgrupados = agruparMovimientosPorProducto(movimientosParaMostrar)
+
+    let currentY = finalY + 25
+
+    movimientosAgrupados.forEach((grupo) => {
+      // Verificar si hay espacio en la página
+      if (currentY > 270) {
+        doc.addPage()
+        currentY = 20
+      }
+
+      // Título del producto
+      doc.setFontSize(12)
+      doc.setTextColor(74, 144, 226)
+      const tituloProducto = `${grupo.itemNombre}${grupo.itemCodigo ? ` (${grupo.itemCodigo})` : ""}`
+      doc.text(tituloProducto, 14, currentY)
+      currentY += 8
+
+      // Tabla de movimientos del producto
+      autoTable(doc, {
+        startY: currentY,
+        head: [["Fecha", "Tipo", "Cant. Ant.", "Cant. Nueva", "Descripción"]],
+        headStyles: { fillColor: [74, 144, 226] },
+        body: grupo.movimientos.slice(0, 15).map((mov) => {
+          let fechaFormateada = "Fecha inválida"
+          try {
+            const fecha = new Date(mov.fechaStr)
+            if (!isNaN(fecha.getTime())) {
+              fechaFormateada = format(fecha, "dd/MM/yyyy")
+            }
+          } catch (e) {
+            console.error("Error al formatear fecha:", e, mov.fechaStr)
+          }
+
+          const tipo = mov.tipo || mov.movement_type || "ajuste"
+          const cantidadAnterior = mov.cantidadAnterior ?? mov.quantity_before ?? 0
+          const cantidadNueva = mov.cantidadNueva ?? mov.quantity_after ?? 0
+          const descripcion = mov.descripcion || mov.description || ""
+          const descripcionCorta = descripcion.length > 40 ? descripcion.substring(0, 40) + "..." : descripcion
+
+          return [
+            fechaFormateada,
+            tipo,
+            cantidadAnterior.toString(),
+            cantidadNueva.toString(),
+            descripcionCorta,
+          ]
+        }),
+        theme: "striped",
+        styles: { fontSize: 8 },
+        columnStyles: {
+          0: { cellWidth: 30 },
+          1: { cellWidth: 25 },
+          2: { cellWidth: 25, halign: "center" },
+          3: { cellWidth: 25, halign: "center" },
+          4: { cellWidth: 85 },
+        },
+      })
+
+      currentY = (doc as any).lastAutoTable.finalY + 10
+      doc.setTextColor(0, 0, 0) // Resetear color
+    })
+
+    // Tabla de Observaciones
+    const finalYObservaciones = (doc as any).lastAutoTable.finalY || finalY + 20
+    const movimientosConObservaciones = movimientosFiltrados.filter(
+      (mov) => mov && mov.id && (mov.descripcion || mov.description)
+    )
+
+    if (movimientosConObservaciones.length > 0) {
+      doc.setFontSize(14)
+      doc.text("Observaciones y Notas", 14, finalYObservaciones + 15)
+
+      autoTable(doc, {
+        startY: finalYObservaciones + 20,
+        head: [["Fecha", "Producto", "Código", "Tipo", "Cantidad", "Observaciones"]],
+        headStyles: { fillColor: [74, 144, 226] },
+        body: movimientosConObservaciones.map((mov) => {
           // Manejar diferentes formatos de fecha
           const fechaStr = mov.fecha || mov.created_at || new Date().toISOString()
           let fechaFormateada = "Fecha inválida"
@@ -615,26 +834,38 @@ export function ReportsGenerator({ items, movements, currentWarehouseId }: Repor
             console.error("Error al formatear fecha:", e, fechaStr)
           }
 
-          // Manejar diferentes formatos de campos
-          const itemNombre = mov.itemNombre || mov.description?.split(":")[0] || "Producto desconocido"
+          // Buscar el item para obtener código y nombre
+          const item = itemsParaExportar.find((i) => i.id === (mov.itemId || mov.item_id))
+          const itemNombre = item?.nombre || item?.name || mov.itemNombre || "Producto desconocido"
+          const itemCodigo = item?.codigo || item?.code || mov.itemCodigo || ""
           const tipo = mov.tipo || mov.movement_type || "ajuste"
-          const cantidadAnterior = mov.cantidadAnterior ?? mov.quantity_before ?? 0
-          const cantidadNueva = mov.cantidadNueva ?? mov.quantity_after ?? 0
+          const cantidadCambio = mov.diferencia ?? Math.abs(mov.quantity_change ?? 0)
+          const descripcion = mov.descripcion || mov.description || "Sin observaciones"
 
           return [
             fechaFormateada,
-            itemNombre,
+            itemNombre.length > 30 ? itemNombre.substring(0, 30) + "..." : itemNombre,
+            itemCodigo,
             tipo,
-            cantidadAnterior,
-            cantidadNueva,
+            `${tipo === "entrada" ? "+" : tipo === "salida" ? "-" : ""}${cantidadCambio}`,
+            descripcion.length > 50 ? descripcion.substring(0, 50) + "..." : descripcion,
           ]
         }),
-      theme: "striped",
-      headStyles: { fillColor: [74, 144, 226] },
-    })
+        theme: "striped",
+        styles: { fontSize: 8 },
+        columnStyles: {
+          0: { cellWidth: 25 },
+          1: { cellWidth: 50 },
+          2: { cellWidth: 25 },
+          3: { cellWidth: 20 },
+          4: { cellWidth: 20, halign: "center" },
+          5: { cellWidth: 60 },
+        },
+      })
+    }
 
     // Resumen final
-    const finalY2 = (doc as any).lastAutoTable.finalY || yPos + 20
+    const finalY2 = (doc as any).lastAutoTable.finalY || finalYObservaciones + 20
     doc.setFontSize(14)
     doc.text("Resumen Final", 14, finalY2 + 15)
     doc.setFontSize(10)
@@ -708,11 +939,20 @@ export function ReportsGenerator({ items, movements, currentWarehouseId }: Repor
             </div>
           )}
           
-          {selectedWarehouseIds.size > 0 && (
-            <p className="text-sm text-muted-foreground pt-2 border-t">
-              <strong>Bodegas seleccionadas:</strong> {nombreBodega}
-            </p>
-          )}
+          <p className="text-sm text-muted-foreground pt-2 border-t">
+            {selectedWarehouseIds.size > 0 ? (
+              <>
+                <strong>Bodegas seleccionadas:</strong> {nombreBodega}
+              </>
+            ) : (
+              <>
+                <strong>Bodega para el informe:</strong> {nombreBodega}
+                {currentWarehouseId && currentWarehouseId !== "all" && (
+                  <span className="text-xs text-muted-foreground ml-2">(usando bodega actual)</span>
+                )}
+              </>
+            )}
+          </p>
         </div>
 
         {/* Selector de fechas */}
